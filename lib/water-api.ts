@@ -74,25 +74,20 @@ export async function fetchContaminants(
     for (var i = 0; i < resultsData.data.length; i++) {
       var c = resultsData.data[i];
 
-      var detected = c.max || c.median;
-      if (detected === null || detected === undefined || detected <= 0) continue;
-
-      var detRate = c.detection_rate;
-      if (detRate) {
-        var parsed = parseFloat(String(detRate).replace("%", ""));
-        if (parsed <= 0) continue;
-      }
+      if (c.median === null || c.median <= 0) continue;
+      if (!c.pct_detected || c.pct_detected <= 0) continue;
 
       var guideline = null;
-      if (c.slr !== null && c.slr !== undefined && c.slr > 0) {
+      if (c.slr && c.slr > 0) {
         guideline = c.slr;
-      } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) {
+      } else if (c.fed_mcl && c.fed_mcl > 0) {
         guideline = c.fed_mcl;
       }
 
       if (!guideline) continue;
 
-      var timesAbove = Math.round(detected / guideline);
+      var detectedLevel = c.median;
+      var timesAbove = Math.round(detectedLevel / guideline);
 
       if (timesAbove < 2) continue;
 
@@ -117,7 +112,7 @@ export async function fetchContaminants(
       mapped.push({
         name: c.name,
         description: description,
-        detected_level: detected,
+        detected_level: detectedLevel,
         unit: c.unit || "PPB",
         ewg_guideline: guideline,
         epa_limit: c.fed_mcl || 0,
