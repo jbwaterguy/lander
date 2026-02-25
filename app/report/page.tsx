@@ -1,4 +1,4 @@
-// cache bust v5
+// cache bust v6
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -45,7 +45,7 @@ async function getReport(id: string): Promise<ReportData | null> {
 
 async function getContaminants(city: string, state: string): Promise<ContaminantData[]> {
   const apiKey = process.env.WATER_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) return [{ name: "DEBUG: No API key", description: "missing key", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
 
   try {
     var res1 = await fetch(
@@ -60,9 +60,10 @@ async function getContaminants(city: string, state: string): Promise<Contaminant
       }
     );
 
-    if (!res1.ok) return [];
+    if (!res1.ok) return [{ name: "DEBUG: utilities fetch failed status " + res1.status, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
+
     var data1 = await res1.json();
-    if (data1.result !== "OK" || !data1.data || data1.data.length === 0) return [];
+    if (data1.result !== "OK" || !data1.data || data1.data.length === 0) return [{ name: "DEBUG: no utilities found for " + city + " " + state, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
 
     var pwsid = data1.data[0].pwsid;
 
@@ -78,9 +79,10 @@ async function getContaminants(city: string, state: string): Promise<Contaminant
       }
     );
 
-    if (!res2.ok) return [];
+    if (!res2.ok) return [{ name: "DEBUG: results fetch failed status " + res2.status, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
+
     var data2 = await res2.json();
-    if (data2.result !== "OK" || !data2.data) return [];
+    if (data2.result !== "OK" || !data2.data) return [{ name: "DEBUG: no results for pwsid " + pwsid, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
 
     var mapped: ContaminantData[] = [];
 
@@ -146,9 +148,15 @@ async function getContaminants(city: string, state: string): Promise<Contaminant
       return b.times_above_guideline - a.times_above_guideline;
     });
 
-    return mapped.slice(0, 8);
-  } catch (error) {
-    return [];
+    var sliced = mapped.slice(0, 8);
+
+    if (sliced.length === 0) {
+      return [{ name: "DEBUG: 0 contaminants passed filter out of " + data2.data.length + " total", description: "filter too strict", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
+    }
+
+    return sliced;
+  } catch (error: any) {
+    return [{ name: "DEBUG ERROR: " + error.message, description: "catch block", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
   }
 }
 
@@ -277,7 +285,6 @@ export default async function ReportPage({
             </div>
           )}
 
-        {contaminants.length === 0 && <p style={{color: "red"}}>Debug: No contaminants found. Key: {!!process.env.WATER_API_KEY ? "yes" : "no"}</p>}
           <div className="contaminant-grid">
             {contaminants.map((c, i) => (
               <ContaminantCard key={i} data={c} />
@@ -383,10 +390,10 @@ function ContaminantCard({ data }: { data: ContaminantData }) {
       </div>
       <div className="contaminant-level">
         <div className={`value ${valueClass}`}>
-          {data.status === "ok" ? "Below" : `${data.times_above_guideline}×`}
+          {data.times_above_guideline === 0 ? "" : `${data.times_above_guideline}×`}
         </div>
         <div className="limit">
-          {data.status === "ok" ? "EPA action level" : "above health guideline"}
+          {data.times_above_guideline === 0 ? "" : "above health guideline"}
         </div>
       </div>
       <div className="contaminant-bar-wrap">
