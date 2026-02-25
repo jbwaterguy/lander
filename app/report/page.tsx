@@ -89,21 +89,27 @@ async function getContaminants(city: string, state: string): Promise<Contaminant
   } catch (err: any) { return [makeDebug("DEBUG ERR: " + err.message)]; }
 }
 
-async function getReviews(zip: string): Promise<{ author: string; quote: string }[]> {
-  // First try: 5-star reviews matching this zip
-  var local = await supabase.from("reviews").select("author, quote").eq("zip", zip).eq("rating", 5).limit(4);
-  var reviews: { author: string; quote: string }[] = local.data || [];
-  // If we don't have 4, fill with random 5-star reviews from other zips
+async function getReviews(zip: string): Promise<{ reviews: { author: string; quote: string }[]; zipCount: number; totalCount: number }> {
+  // Get ALL 5-star reviews for this zip
+  var local = await supabase.from("reviews").select("author, quote").eq("zip", zip).eq("rating", 5);
+var zipReviews: { author: string; quote: string }[] = (local.data || []).filter(function(r) { return r.quote && r.quote.trim().length > 0; });
+  var zipCount = zipReviews.length;
+
+  // Get total count of ALL 5-star reviews
+  var totalResult = await supabase.from("reviews").select("id", { count: "exact", head: true }).eq("rating", 5);
+  var totalCount = totalResult.count || 0;
+
+  // If we don't have at least 4 zip reviews, fill with random 5-star reviews from other zips
+  var reviews = [...zipReviews];
   if (reviews.length < 4) {
     var remaining = 4 - reviews.length;
     var localAuthors = reviews.map(function(r) { return r.author; });
     var fill = await supabase.from("reviews").select("author, quote").eq("rating", 5).neq("zip", zip).limit(remaining * 3);
-    var pool = (fill.data || []).filter(function(r) { return localAuthors.indexOf(r.author) === -1; });
-    // Shuffle and take what we need
+    var pool = (fill.data || []).filter(function(r) { return r.quote && r.quote.trim().length > 0 && localAuthors.indexOf(r.author) === -1; });
     for (var i = pool.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
     reviews = reviews.concat(pool.slice(0, remaining));
   }
-  return reviews;
+  return { reviews: reviews, zipCount: zipCount, totalCount: totalCount };
 }
 
 export default async function ReportPage({ searchParams }: { searchParams: { id?: string } }) {
@@ -115,19 +121,24 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
   var lng = report.lng || DEFAULT_LNG;
   var contaminants = await getContaminants(report.city, report.state);
   var nearbyCustomers = await fetchNearbyCustomers(lat, lng);
-  var reviews = await getReviews(report.zip);
+  var reviewData = await getReviews(report.zip);
+  var reviews = reviewData.reviews;
+  var zipReviewCount = reviewData.zipCount;
+  var totalReviewCount = reviewData.totalCount;
+  var firstReviews = reviews.slice(0, 4);
+  var extraReviews = reviews.slice(4);
   var totalBad = contaminants.filter(function(c) { return c.status === "exceeds" || c.status === "warning"; }).length;
   var firstName = report.client_name.split(" ")[0];
   var fullAddress = report.address + ", " + report.city + ", " + report.state + " " + report.zip;
   return (
     <>
-      <section className="hero"><div className="hero-inner"><img src="https://aquaclearws.com/wp-content/uploads/2023/10/cropped-cropped-aqua-clear-web-transparent_logo-color.png" alt="Aqua Clear Water Systems" style={{ height: "90px", marginBottom: "24px", display: "block" }} /><div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust Aqua Clear.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose Aqua Clear Water Systems.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
+      <section className="hero"><div className="hero-inner"><div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust Aqua Clear.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose Aqua Clear Water Systems.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
 
       <section className="map-section"><div className="section-inner"><span className="section-label">Your Neighborhood</span><h2 className="section-title">{nearbyCustomers.length} homes near you already have clean water</h2><p className="section-subtitle">Each blue pin represents a family in your area who chose Aqua Clear to protect their home&apos;s water supply.</p><MapSection centerLat={lat} centerLng={lng} customers={nearbyCustomers} clientName={firstName} customerCount={nearbyCustomers.length} /></div></section>
 
       <section className="contaminants-section"><div className="section-inner"><span className="section-label">Your City Water Report &mdash; {report.zip}</span><h2 className="section-title">What&apos;s in your tap water right now</h2><p className="section-subtitle">Based on the most recent water quality data for your area. Tap any contaminant to learn about its health effects.</p>{totalBad > 0 && (<div className="alert-banner"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ee5a24" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg><div><strong>{totalBad} contaminant{totalBad > 1 ? "s" : ""} exceed health guidelines</strong><p>Your area&apos;s water contains contaminants above levels recommended for safe consumption.</p></div></div>)}<div className="contaminant-grid">{contaminants.map(function(c, i) { return <ContaminantCard key={i} data={c} />; })}</div></div></section>
 
-      <section className="social-section"><div className="section-inner"><span className="section-label">From Your Neighbors</span><h2 className="section-title">What families in {report.city} are saying</h2><p className="section-subtitle">Real reviews from homeowners near your address.</p><div className="testimonial-cards">{reviews.map(function(r, i) { return <TestimonialCard key={i} quote={r.quote} author={r.author} />; })}</div></div></section>
+      <section className="social-section"><div className="section-inner"><span className="section-label">From Your Neighbors</span><h2 className="section-title">What families in {report.city} are saying</h2><p className="section-subtitle">Real reviews from homeowners near your address.</p><div className="review-counts"><div className="review-count-badge"><span className="review-count-num">{zipReviewCount}</span> five-star reviews in {report.zip}</div><div className="review-count-badge total"><span className="review-count-num">{totalReviewCount.toLocaleString()}</span> total five-star reviews</div></div><div className="testimonial-cards">{firstReviews.map(function(r, i) { return <TestimonialCard key={i} quote={r.quote} author={r.author} />; })}</div>{extraReviews.length > 0 && (<details className="more-reviews"><summary className="more-reviews-btn">Read {extraReviews.length} More Review{extraReviews.length > 1 ? "s" : ""} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9" /></svg></summary><div className="testimonial-cards extra-reviews-grid">{extraReviews.map(function(r, i) { return <TestimonialCard key={i + 4} quote={r.quote} author={r.author} />; })}</div></details>)}</div></section>
 
       <section className="cta-section"><div className="section-inner"><span className="section-label" style={{ color: "#41B6E6" }}>Take The Next Step</span><h2 className="section-title">Claim your free in-home water test</h2><p className="section-subtitle">We&apos;ll test your water right at the tap, show you exactly what&apos;s in it, and walk you through your options. No pressure, no obligation.</p><a href="https://aquaclearws.com/#claim" className="cta-btn">Claim Free Water Test<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg></a><div className="cta-phone">Or call us directly: <a href="tel:8652256555">(865) 225-6555</a></div><div className="cta-trust">&#9733; 6,000+ Five Star Reviews &middot; Family Owned &middot; Industry Leading Warranty</div></div></section>
 
