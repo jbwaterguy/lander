@@ -69,7 +69,7 @@ export default async function ReportPage({
   const lng = report.lng || DEFAULT_LNG;
 
   const [contaminants, nearbyCustomers] = await Promise.all([
-    fetchContaminants(report.zip),
+    fetchContaminants(report.zip, report.city, report.state)),
     fetchNearbyCustomers(lat, lng),
   ]);
 
@@ -299,7 +299,7 @@ function ContaminantCard({ data }: { data: ContaminantData }) {
           {data.status === "ok" ? "Below" : `${data.times_above_guideline}×`}
         </div>
         <div className="limit">
-          {data.status === "ok" ? "EPA action level" : "above EWG guideline"}
+          {data.status === "ok" ? "EPA action level" : "above health guideline"}
         </div>
       </div>
       <div className="contaminant-bar-wrap">
