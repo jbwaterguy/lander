@@ -1,3 +1,8 @@
+
+
+
+
+
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -120,7 +125,7 @@ export default function MapSection({
           <div className="legend-dot red"></div>
           Your Home
         </div>
-        <div className="map-stat">{customerCount} homes within 2 miles</div>
+        <div className="map-stat">{customerCount} homes in your area</div>
       </div>
     </div>
   );
