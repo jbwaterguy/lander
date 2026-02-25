@@ -149,7 +149,7 @@ export default async function ReportPage({
           </h2>
           <p className="section-subtitle">
             Based on the most recent water quality data for your zip code. Levels
-            shown against EPA & EWG health guidelines.
+            shown against EWG health guidelines.
           </p>
 
           {exceedCount > 0 && (
