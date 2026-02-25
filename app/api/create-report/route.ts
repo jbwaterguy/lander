@@ -5,35 +5,46 @@ import crypto from "crypto";
 /**
  * POST /api/create-report
  *
- * Called by Zapier when a job is scheduled in your CRM.
- *
- * Request body:
- * {
- *   "client_name": "Sarah & James Mitchell",
- *   "address": "742 Maple Creek Drive",
- *   "city": "Farragut",
- *   "state": "TN",
- *   "zip": "37934",
- *   "phone": "865-555-1234",       // optional, for tracking
- *   "lat": 35.8868,                 // optional — if not provided, you'll need geocoding
- *   "lng": -84.1530                 // optional
- * }
- *
- * Response:
- * {
- *   "success": true,
- *   "report_id": "a1b2c3d4",
- *   "url": "https://yourdomain.com/report?id=a1b2c3d4"
- * }
- *
- * ZAPIER SETUP:
- * 1. Use "Webhooks by Zapier" > "POST" action
- * 2. URL: https://your-vercel-domain.com/api/create-report
- * 3. Headers: { "Authorization": "Bearer YOUR_API_SECRET", "Content-Type": "application/json" }
- * 4. Body: map fields from your CRM trigger
+ * Auto-geocodes the address if lat/lng not provided.
+ * lat/lng are now fully optional — just pass the street address.
  */
+
+async function geocodeAddress(address: string, city: string, state: string, zip: string): Promise<{ lat: number; lng: number } | null> {
+  const fullAddress = `${address}, ${city}, ${state} ${zip}`;
+  
+  // Try US Census Geocoder first (free, no key needed)
+  try {
+    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(fullAddress)}&benchmark=Public_AR_Current&format=json`;
+    const res = await fetch(censusUrl, { signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    const match = data?.result?.addressMatches?.[0];
+    if (match?.coordinates) {
+      return { lat: match.coordinates.y, lng: match.coordinates.x };
+    }
+  } catch (e) {
+    console.error("Census geocoder failed:", e);
+  }
+
+  // Fallback: OpenStreetMap Nominatim (free, no key needed)
+  try {
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fullAddress)}&format=json&limit=1`;
+    const res = await fetch(nominatimUrl, {
+      headers: { "User-Agent": "AquaClearWaterReports/1.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    if (data?.[0]) {
+      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    }
+  } catch (e) {
+    console.error("Nominatim geocoder failed:", e);
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
-  // ── Auth check ──
+  // — Auth check —
   const authHeader = request.headers.get("authorization");
   const expectedToken = `Bearer ${process.env.API_SECRET}`;
 
@@ -44,7 +55,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    // ── Validate required fields ──
+    // — Validate required fields —
     const { client_name, address, city, state, zip } = body;
     if (!client_name || !address || !city || !state || !zip) {
       return NextResponse.json(
@@ -53,10 +64,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Generate unique report ID (short, URL-safe) ──
-    const report_id = crypto.randomBytes(6).toString("hex"); // 12-char hex string
+    // — Auto-geocode if lat/lng not provided —
+    let lat = body.lat || null;
+    let lng = body.lng || null;
 
-    // ── Insert into Supabase ──
+    if (!lat || !lng) {
+      const coords = await geocodeAddress(address, city, state, zip);
+      if (coords) {
+        lat = coords.lat;
+        lng = coords.lng;
+      }
+    }
+
+    // — Generate unique report ID (short, URL-safe) —
+    const report_id = crypto.randomBytes(6).toString("hex");
+
+    // — Insert into Supabase —
     const { error } = await supabaseAdmin.from("reports").insert({
       id: report_id,
       client_name: body.client_name,
@@ -65,8 +88,8 @@ export async function POST(request: NextRequest) {
       state: body.state,
       zip: body.zip,
       phone: body.phone || null,
-      lat: body.lat || null,
-      lng: body.lng || null,
+      lat,
+      lng,
       created_at: new Date().toISOString(),
       viewed: false,
     });
@@ -79,7 +102,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Return the unique URL ──
+    // — Return the unique URL —
     const baseUrl =
       process.env.NEXT_PUBLIC_SITE_URL ||
       `https://${request.headers.get("host")}`;
@@ -89,6 +112,8 @@ export async function POST(request: NextRequest) {
       success: true,
       report_id,
       url: reportUrl,
+      geocoded: !body.lat || !body.lng ? true : false,
+      coordinates: { lat, lng },
     });
   } catch (err) {
     console.error("Create report error:", err);
