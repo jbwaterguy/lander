@@ -505,3 +505,157 @@ footer {
     grid-template-columns: 1fr 1fr;
   }
 }
+/* ——— EXPANDABLE CONTAMINANT CARDS (append to end of globals.css) ——— */
+
+/* Reset details/summary default styles */
+details.contaminant-card {
+  display: block;
+  cursor: pointer;
+}
+details.contaminant-card > summary {
+  list-style: none;
+  display: block;
+}
+details.contaminant-card > summary::-webkit-details-marker {
+  display: none;
+}
+details.contaminant-card > summary::marker {
+  display: none;
+  content: "";
+}
+
+/* Top row layout — used in both expandable and non-expandable cards */
+.contaminant-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Non-expandable cards keep the old grid layout */
+.contaminant-card:not(details) {
+  display: block;
+}
+
+/* Expandable card hover */
+details.contaminant-card.expandable:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Tap hint */
+.tap-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--gray-300);
+  margin-top: 10px;
+  transition: color 0.2s;
+}
+.tap-hint .tap-icon {
+  font-style: normal;
+}
+.tap-hint .chevron {
+  display: inline-block;
+  transition: transform 0.3s;
+}
+details[open] .tap-hint .chevron {
+  transform: rotate(180deg);
+}
+details[open] .tap-hint {
+  color: var(--sky);
+}
+
+/* Expanded details panel */
+.contaminant-details {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--gray-100);
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 500px;
+  }
+}
+
+/* Detail blocks */
+.detail-block {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+  align-items: flex-start;
+}
+.detail-block:last-child {
+  margin-bottom: 0;
+}
+.detail-block .detail-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  width: 24px;
+  text-align: center;
+}
+.detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--sky);
+  margin-bottom: 4px;
+}
+.detail-text {
+  font-size: 14px;
+  color: var(--gray-600);
+  line-height: 1.6;
+  font-weight: 300;
+}
+.detail-text strong {
+  color: var(--navy);
+  font-weight: 600;
+}
+
+/* Detail numbers row */
+.detail-numbers {
+  background: var(--off-white);
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 4px;
+}
+
+/* Body effect tags */
+.body-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.body-tag {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ocean);
+  background: rgba(46, 134, 222, 0.08);
+  border: 1px solid rgba(46, 134, 222, 0.15);
+  padding: 3px 10px;
+  border-radius: 100px;
+}
+
+/* Override: exceeds cards get red-tinted body tags */
+.contaminant-card.exceeds .body-tag {
+  color: var(--danger);
+  background: rgba(238, 90, 36, 0.06);
+  border-color: rgba(238, 90, 36, 0.15);
+}
+
+/* Override: warning cards get amber-tinted body tags */
+.contaminant-card.warning .body-tag {
+  color: #b7791f;
+  background: rgba(246, 185, 59, 0.08);
+  border-color: rgba(246, 185, 59, 0.2);
+}
