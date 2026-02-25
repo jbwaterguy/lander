@@ -95,22 +95,24 @@ export async function fetchContaminants(
 
     // Step 3: Map to our format — filter to detected contaminants with health relevance
     const mapped = resultsData.data
-      .filter(
+     .filter(
         (c: any) =>
           c.median !== null &&
           c.median > 0 &&
-          c.pct_detected > 0 &&
-          // Only show contaminants that have a guideline to compare against
-          (c.fed_mcl > 0 || c.slr > 0)
+          c.pct_detected > 0
       )
       .map((c: any) => {
-        // Use SimpleLab's recommendation (slr) as the primary guideline,
-        // fall back to federal MCL
-        const guideline = c.slr > 0 ? c.slr : c.fed_mcl;
+        const guideline = (c.slr && c.slr > 0) ? c.slr : (c.fed_mcl && c.fed_mcl > 0) ? c.fed_mcl : null;
         const epaLimit = c.fed_mcl || 0;
+
+        // Skip contaminants with no guideline to compare against
+        if (!guideline) return null;
+
         const detectedLevel = c.median;
-        const timesAbove =
-          guideline > 0 ? Math.round(detectedLevel / guideline) : 0;
+        const timesAbove = Math.round(detectedLevel / guideline);
+
+        // Only include contaminants that EXCEED the guideline
+        if (timesAbove < 2) return null;
 
         let status: "exceeds" | "warning" | "ok";
         if (timesAbove >= 10) {
@@ -121,10 +123,8 @@ export async function fetchContaminants(
           status = "ok";
         }
 
-        // Build a description from health_effects or sources
         let description = "";
         if (c.health_effects) {
-          // Take the first sentence of health_effects
           const firstSentence = c.health_effects.split(". ")[0];
           description =
             firstSentence.length > 120
@@ -151,7 +151,18 @@ export async function fetchContaminants(
           status,
         };
       })
+      .filter(Boolean)
+      .sort((a: ContaminantData, b: ContaminantData) => {
+        const statusOrder = { exceeds: 0, warning: 1, ok: 2 };
+        if (statusOrder[a.status] !== statusOrder[b.status]) {
+          return statusOrder[a.status] - statusOrder[b.status];
+        }
+        return b.times_above_guideline - a.times_above_guideline;
+      })
+      .slice(0, 8);
+      })
       // Sort: exceeds first, then warning, then ok — and by severity within each
+     .filter(Boolean)
       .sort((a: ContaminantData, b: ContaminantData) => {
         const statusOrder = { exceeds: 0, warning: 1, ok: 2 };
         if (statusOrder[a.status] !== statusOrder[b.status]) {
