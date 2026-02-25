@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { supabase } from "@/lib/supabase";
 import { fetchContaminants, ContaminantData } from "@/lib/water-api";
 import { fetchNearbyCustomers, NearbyCustomer } from "@/lib/customers";
