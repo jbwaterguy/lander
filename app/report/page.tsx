@@ -93,7 +93,7 @@ export default async function ReportPage({
           </h1>
           <p className="hero-sub">
             We prepared this report specifically for your home. See what&apos;s in
-            your city water — and how {nearbyCustomers.length} families within 2
+            your city water — and how {nearbyCustomers.length} families within 10
             miles of you have already made the switch.
           </p>
           <div className="hero-address">
