@@ -23,7 +23,7 @@ export interface NearbyCustomer {
 export async function fetchNearbyCustomers(
   lat: number,
   lng: number,
-  radiusMiles: number = 3
+  radiusMiles: number = 10
 ): Promise<NearbyCustomer[]> {
   // Convert miles to approximate degrees (1 degree ≈ 69 miles)
   const radiusDeg = radiusMiles / 69;
