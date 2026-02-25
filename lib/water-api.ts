@@ -17,7 +17,6 @@ export async function fetchContaminants(
   const apiKey = process.env.WATER_API_KEY;
 
   if (!apiKey || apiKey === "your-api-key-here") {
-    console.warn("No WATER_API_KEY set, using mock data");
     return getMockContaminants();
   }
 
@@ -27,111 +26,115 @@ export async function fetchContaminants(
     if (state) utilityParams.set("state_code", state);
 
     const utilityRes = await fetch(
-      `https://api.gosimplelab.com/api/utilities/list?${utilityParams.toString()}`,
+      "https://api.gosimplelab.com/api/utilities/list?" + utilityParams.toString(),
       {
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          "Authorization": "Bearer " + apiKey,
           "Content-Type": "application/json",
-          Accept: "application/json",
+          "Accept": "application/json",
         },
       }
     );
 
     if (!utilityRes.ok) {
-      console.error("SimpleLab utilities/list error:", utilityRes.status);
       return getMockContaminants();
     }
 
     const utilityData = await utilityRes.json();
 
     if (utilityData.result !== "OK" || !utilityData.data || utilityData.data.length === 0) {
-      console.warn("No utilities found for", city, state);
       return getMockContaminants();
     }
 
     const pwsid = utilityData.data[0].pwsid;
 
     const resultsRes = await fetch(
-      `https://api.gosimplelab.com/api/utilities/results?pws_id=${pwsid}&result_type=pws`,
+      "https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws",
       {
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          "Authorization": "Bearer " + apiKey,
           "Content-Type": "application/json",
-          Accept: "application/json",
+          "Accept": "application/json",
         },
       }
     );
 
     if (!resultsRes.ok) {
-      console.error("SimpleLab utilities/results error:", resultsRes.status);
       return getMockContaminants();
     }
 
     const resultsData = await resultsRes.json();
 
     if (resultsData.result !== "OK" || !resultsData.data) {
-      console.warn("No results for utility", pwsid);
       return getMockContaminants();
     }
 
-    const mapped = resultsData.data
-      .filter(
-        (c: any) =>
-          c.median !== null &&
-          c.median > 0 &&
-          c.pct_detected > 0
-      )
-      .map((c: any) => {
-        const guideline = (c.slr && c.slr > 0) ? c.slr : (c.fed_mcl && c.fed_mcl > 0) ? c.fed_mcl : null;
-        const epaLimit = c.fed_mcl || 0;
+    var mapped: ContaminantData[] = [];
 
-        if (!guideline) return null;
+    for (var i = 0; i < resultsData.data.length; i++) {
+      var c = resultsData.data[i];
 
-        const detectedLevel = c.median;
-        const timesAbove = Math.round(detectedLevel / guideline);
+      var detected = c.max || c.median;
+      if (detected === null || detected === undefined || detected <= 0) continue;
 
-        if (timesAbove < 2) return null;
+      var detRate = c.detection_rate;
+      if (detRate) {
+        var parsed = parseFloat(String(detRate).replace("%", ""));
+        if (parsed <= 0) continue;
+      }
 
-        let status: "exceeds" | "warning" | "ok";
-        if (timesAbove >= 10) {
-          status = "exceeds";
-        } else if (timesAbove >= 2) {
-          status = "warning";
-        } else {
-          status = "ok";
-        }
+      var guideline = null;
+      if (c.slr !== null && c.slr !== undefined && c.slr > 0) {
+        guideline = c.slr;
+      } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) {
+        guideline = c.fed_mcl;
+      }
 
-        let description = "";
-        if (c.health_effects) {
-          const firstSentence = c.health_effects.split(". ")[0];
-          description = firstSentence.length > 120 ? firstSentence.substring(0, 117) + "..." : firstSentence;
-        } else if (c.sources) {
-          const firstSentence = c.sources.split(". ")[0];
-          description = firstSentence.length > 120 ? firstSentence.substring(0, 117) + "..." : firstSentence;
-        } else {
-          description = `${c.type || "Contaminant"} detected in your water supply`;
-        }
+      if (!guideline) continue;
 
-        return {
-          name: c.name,
-          description,
-          detected_level: detectedLevel,
-          unit: c.unit || "PPB",
-          ewg_guideline: guideline,
-          epa_limit: epaLimit,
-          times_above_guideline: timesAbove,
-          status,
-        };
-      })
-      .filter(Boolean)
-      .sort((a: ContaminantData, b: ContaminantData) => {
-        const statusOrder = { exceeds: 0, warning: 1, ok: 2 };
-        if (statusOrder[a.status] !== statusOrder[b.status]) {
-          return statusOrder[a.status] - statusOrder[b.status];
-        }
-        return b.times_above_guideline - a.times_above_guideline;
-      })
-      .slice(0, 8);
+      var timesAbove = Math.round(detected / guideline);
+
+      if (timesAbove < 2) continue;
+
+      var status: "exceeds" | "warning" | "ok" = "ok";
+      if (timesAbove >= 10) {
+        status = "exceeds";
+      } else if (timesAbove >= 2) {
+        status = "warning";
+      }
+
+      var description = "";
+      if (c.health_effects) {
+        var sentence = c.health_effects.split(". ")[0];
+        description = sentence.length > 120 ? sentence.substring(0, 117) + "..." : sentence;
+      } else if (c.sources) {
+        var sentence2 = c.sources.split(". ")[0];
+        description = sentence2.length > 120 ? sentence2.substring(0, 117) + "..." : sentence2;
+      } else {
+        description = (c.type || "Contaminant") + " detected in your water supply";
+      }
+
+      mapped.push({
+        name: c.name,
+        description: description,
+        detected_level: detected,
+        unit: c.unit || "PPB",
+        ewg_guideline: guideline,
+        epa_limit: c.fed_mcl || 0,
+        times_above_guideline: timesAbove,
+        status: status,
+      });
+    }
+
+    mapped.sort(function (a, b) {
+      var order: Record<string, number> = { exceeds: 0, warning: 1, ok: 2 };
+      if (order[a.status] !== order[b.status]) {
+        return order[a.status] - order[b.status];
+      }
+      return b.times_above_guideline - a.times_above_guideline;
+    });
+
+    mapped = mapped.slice(0, 8);
 
     if (mapped.length === 0) {
       return getMockContaminants();
@@ -139,7 +142,6 @@ export async function fetchContaminants(
 
     return mapped;
   } catch (error) {
-    console.error("SimpleLab API error:", error);
     return getMockContaminants();
   }
 }
