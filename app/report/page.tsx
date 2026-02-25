@@ -69,7 +69,7 @@ export default async function ReportPage({
   const lng = report.lng || DEFAULT_LNG;
 
   const [contaminants, nearbyCustomers] = await Promise.all([
-    fetchContaminants(report.zip, report.city, report.state)),
+    fetchContaminants(report.zip, report.city, report.state),
     fetchNearbyCustomers(lat, lng),
   ]);
 
