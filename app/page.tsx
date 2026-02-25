@@ -2,7 +2,7 @@ export default function Home() {
   return (
     <div className="not-found">
       <div>
-        <h1>Pure Water Solutions</h1>
+        <h1>Aqua Clear Water Systems</h1>
         <p>
           This page is personalized for each homeowner.
           <br />
