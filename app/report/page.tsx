@@ -1,10 +1,21 @@
+// cache bust v5
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { supabase } from "@/lib/supabase";
-import { fetchContaminants, ContaminantData } from "@/lib/water-api";
 import { fetchNearbyCustomers, NearbyCustomer } from "@/lib/customers";
 import MapSection from "@/components/MapSection";
+
+interface ContaminantData {
+  name: string;
+  description: string;
+  detected_level: number;
+  unit: string;
+  ewg_guideline: number;
+  epa_limit: number;
+  times_above_guideline: number;
+  status: "exceeds" | "warning" | "ok";
+}
 
 interface ReportData {
   id: string;
@@ -17,7 +28,6 @@ interface ReportData {
   lng: number | null;
 }
 
-// Default coordinates for Farragut, TN — used if lat/lng not provided
 const DEFAULT_LAT = 35.8868;
 const DEFAULT_LNG = -84.153;
 
@@ -29,11 +39,117 @@ async function getReport(id: string): Promise<ReportData | null> {
     .single();
 
   if (error || !data) return null;
-
-  // Mark as viewed
   await supabase.from("reports").update({ viewed: true }).eq("id", id);
-
   return data;
+}
+
+async function getContaminants(city: string, state: string): Promise<ContaminantData[]> {
+  const apiKey = process.env.WATER_API_KEY;
+  if (!apiKey) return [];
+
+  try {
+    var res1 = await fetch(
+      "https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state),
+      {
+        cache: "no-store",
+        headers: {
+          "Authorization": "Bearer " + apiKey,
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+      }
+    );
+
+    if (!res1.ok) return [];
+    var data1 = await res1.json();
+    if (data1.result !== "OK" || !data1.data || data1.data.length === 0) return [];
+
+    var pwsid = data1.data[0].pwsid;
+
+    var res2 = await fetch(
+      "https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws",
+      {
+        cache: "no-store",
+        headers: {
+          "Authorization": "Bearer " + apiKey,
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+      }
+    );
+
+    if (!res2.ok) return [];
+    var data2 = await res2.json();
+    if (data2.result !== "OK" || !data2.data) return [];
+
+    var mapped: ContaminantData[] = [];
+
+    for (var i = 0; i < data2.data.length; i++) {
+      var c = data2.data[i];
+
+      var detected = c.max || c.median;
+      if (detected === null || detected === undefined || detected <= 0) continue;
+
+      var detRate = c.detection_rate;
+      if (detRate) {
+        var parsed = parseFloat(String(detRate).replace("%", ""));
+        if (parsed <= 0) continue;
+      }
+
+      var guideline = null;
+      if (c.slr !== null && c.slr !== undefined && c.slr > 0) {
+        guideline = c.slr;
+      } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) {
+        guideline = c.fed_mcl;
+      }
+
+      if (!guideline) continue;
+
+      var timesAbove = Math.round(detected / guideline);
+      if (timesAbove < 2) continue;
+
+      var status: "exceeds" | "warning" | "ok" = "ok";
+      if (timesAbove >= 10) {
+        status = "exceeds";
+      } else if (timesAbove >= 2) {
+        status = "warning";
+      }
+
+      var description = "";
+      if (c.health_effects) {
+        var sentence = c.health_effects.split(". ")[0];
+        description = sentence.length > 120 ? sentence.substring(0, 117) + "..." : sentence;
+      } else if (c.sources) {
+        var sentence2 = c.sources.split(". ")[0];
+        description = sentence2.length > 120 ? sentence2.substring(0, 117) + "..." : sentence2;
+      } else {
+        description = (c.type || "Contaminant") + " detected in your water supply";
+      }
+
+      mapped.push({
+        name: c.name,
+        description: description,
+        detected_level: detected,
+        unit: c.unit || "PPB",
+        ewg_guideline: guideline,
+        epa_limit: c.fed_mcl || 0,
+        times_above_guideline: timesAbove,
+        status: status,
+      });
+    }
+
+    mapped.sort(function (a, b) {
+      var order: Record<string, number> = { exceeds: 0, warning: 1, ok: 2 };
+      if (order[a.status] !== order[b.status]) {
+        return order[a.status] - order[b.status];
+      }
+      return b.times_above_guideline - a.times_above_guideline;
+    });
+
+    return mapped.slice(0, 8);
+  } catch (error) {
+    return [];
+  }
 }
 
 export default async function ReportPage({
@@ -54,7 +170,6 @@ export default async function ReportPage({
     );
   }
 
-  // ── Fetch all data in parallel ──
   const report = await getReport(id);
 
   if (!report) {
@@ -72,17 +187,18 @@ export default async function ReportPage({
   const lng = report.lng || DEFAULT_LNG;
 
   const [contaminants, nearbyCustomers] = await Promise.all([
-    fetchContaminants(report.zip, report.city, report.state),
+    getContaminants(report.city, report.state),
     fetchNearbyCustomers(lat, lng),
   ]);
 
   const exceedCount = contaminants.filter((c) => c.status === "exceeds").length;
+  const warningCount = contaminants.filter((c) => c.status === "warning").length;
+  const totalBad = exceedCount + warningCount;
   const firstName = report.client_name.split(" ")[0];
   const fullAddress = `${report.address}, ${report.city}, ${report.state} ${report.zip}`;
 
   return (
     <>
-      {/* ═══ HERO ═══ */}
       <section className="hero">
         <div className="hero-inner">
           <div className="hero-badge">
@@ -100,14 +216,7 @@ export default async function ReportPage({
             miles of you have already made the switch.
           </p>
           <div className="hero-address">
-            <svg
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              viewBox="0 0 24 24"
-            >
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
               <circle cx="12" cy="9" r="2.5" />
             </svg>
@@ -116,7 +225,6 @@ export default async function ReportPage({
         </div>
       </section>
 
-      {/* ═══ MAP ═══ */}
       <section className="map-section">
         <div className="section-inner">
           <span className="section-label">Your Neighborhood</span>
@@ -127,7 +235,6 @@ export default async function ReportPage({
             Each blue pin represents a family in your area who chose to protect
             their home&apos;s water supply.
           </p>
-
           <MapSection
             centerLat={lat}
             centerLng={lng}
@@ -138,7 +245,6 @@ export default async function ReportPage({
         </div>
       </section>
 
-      {/* ═══ CONTAMINANTS ═══ */}
       <section className="contaminants-section">
         <div className="section-inner">
           <span className="section-label">
@@ -149,32 +255,23 @@ export default async function ReportPage({
           </h2>
           <p className="section-subtitle">
             Based on the most recent water quality data for your zip code. Levels
-            shown against EWG health guidelines.
+            shown against health guidelines.
           </p>
 
-          {exceedCount > 0 && (
+          {totalBad > 0 && (
             <div className="alert-banner">
-              <svg
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="#ee5a24"
-                strokeWidth="2"
-              >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ee5a24" strokeWidth="2">
                 <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                 <line x1="12" y1="9" x2="12" y2="13" />
                 <line x1="12" y1="17" x2="12.01" y2="17" />
               </svg>
               <div>
                 <strong>
-                  {exceedCount} contaminant{exceedCount > 1 ? "s" : ""} exceed
-                  health guidelines
+                  {totalBad} contaminant{totalBad > 1 ? "s" : ""} exceed health guidelines
                 </strong>
                 <p>
-                  Your area&apos;s water contains several contaminants above levels
-                  recommended by the Environmental Working Group for safe
-                  consumption.
+                  Your area&apos;s water contains contaminants above levels
+                  recommended for safe consumption.
                 </p>
               </div>
             </div>
@@ -188,7 +285,6 @@ export default async function ReportPage({
         </div>
       </section>
 
-      {/* ═══ SOCIAL PROOF ═══ */}
       <section className="social-section">
         <div className="section-inner">
           <span className="section-label">From Your Neighbors</span>
@@ -198,7 +294,6 @@ export default async function ReportPage({
           <p className="section-subtitle">
             Real reviews from homeowners within a few miles of your address.
           </p>
-
           <div className="testimonial-cards">
             <TestimonialCard
               quote="We had no idea our water had that much chlorine byproduct. The difference in taste alone was worth it — my kids actually drink water from the tap now."
@@ -228,7 +323,6 @@ export default async function ReportPage({
         </div>
       </section>
 
-      {/* ═══ CTA ═══ */}
       <section className="cta-section">
         <div className="section-inner">
           <span className="section-label" style={{ color: "var(--aqua)" }}>
@@ -241,14 +335,7 @@ export default async function ReportPage({
           </p>
           <a href="#" className="cta-btn">
             Schedule My Free Water Test
-            <svg
-              width="18"
-              height="18"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              viewBox="0 0 24 24"
-            >
+            <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
               <path d="M5 12h14M12 5l7 7-7 7" />
             </svg>
           </a>
@@ -268,8 +355,6 @@ export default async function ReportPage({
   );
 }
 
-/* ─── SUB-COMPONENTS ─── */
-
 function ContaminantCard({ data }: { data: ContaminantData }) {
   const statusClass = data.status;
   const valueClass =
@@ -279,13 +364,11 @@ function ContaminantCard({ data }: { data: ContaminantData }) {
       ? "warn"
       : "safe";
 
-  // Calculate bar width (cap at 95%)
   const barWidth = Math.min(
     data.status === "ok" ? 15 : 30 + (data.times_above_guideline / 300) * 65,
     95
   );
 
-  // Guideline mark position
   const guidelinePos = Math.max(
     5,
     Math.min(data.status === "ok" ? 60 : (1 / data.times_above_guideline) * 100 * 30, 40)
