@@ -32,56 +32,46 @@ export async function GET(request: NextRequest) {
     );
 
     const resultsData = await resultsRes.json();
-    results.total_contaminants = resultsData.data.length;
+    results.total = resultsData.data.length;
 
-    var passed_filter: any[] = [];
-    var skipped_reasons: any[] = [];
-
-    for (var i = 0; i < resultsData.data.length; i++) {
-      var c = resultsData.data[i];
-
-      if (c.median === null || c.median <= 0) {
-        skipped_reasons.push({ name: c.name, reason: "no median", median: c.median });
-        continue;
-      }
-      if (!c.pct_detected || c.pct_detected <= 0) {
-        skipped_reasons.push({ name: c.name, reason: "no detections", pct: c.pct_detected });
-        continue;
-      }
-
-      var guideline = null;
-      if (c.slr && c.slr > 0) {
-        guideline = c.slr;
-      } else if (c.fed_mcl && c.fed_mcl > 0) {
-        guideline = c.fed_mcl;
-      }
-
-      if (!guideline) {
-        skipped_reasons.push({ name: c.name, reason: "no guideline", slr: c.slr, fed_mcl: c.fed_mcl });
-        continue;
-      }
-
-      var timesAbove = Math.round(c.median / guideline);
-
-      if (timesAbove < 2) {
-        skipped_reasons.push({ name: c.name, reason: "below 2x", times: timesAbove, median: c.median, guideline: guideline });
-        continue;
-      }
-
-      passed_filter.push({
+    // Show raw fields for first 5 contaminants so we can see the actual data shape
+    results.raw_sample = resultsData.data.slice(0, 5).map(function(c: any) {
+      return {
         name: c.name,
         median: c.median,
+        average: c.average,
+        avg_concentration: c.avg_concentration,
+        max: c.max,
+        detection_rate: c.detection_rate,
+        pct_detected: c.pct_detected,
         unit: c.unit,
         slr: c.slr,
         fed_mcl: c.fed_mcl,
-        guideline_used: guideline,
-        times_above: timesAbove,
-      });
-    }
+        fed_mclg: c.fed_mclg,
+      };
+    });
 
-    results.passed_count = passed_filter.length;
-    results.passed = passed_filter;
-    results.skipped_sample = skipped_reasons.slice(0, 10);
+    // Find any contaminants that have ANY numeric value
+    var with_values: any[] = [];
+    for (var i = 0; i < resultsData.data.length; i++) {
+      var c = resultsData.data[i];
+      if (c.median > 0 || c.average > 0 || c.avg_concentration > 0 || c.max > 0) {
+        with_values.push({
+          name: c.name,
+          median: c.median,
+          average: c.average,
+          avg_concentration: c.avg_concentration,
+          max: c.max,
+          detection_rate: c.detection_rate,
+          pct_detected: c.pct_detected,
+          unit: c.unit,
+          slr: c.slr,
+          fed_mcl: c.fed_mcl,
+        });
+      }
+    }
+    results.with_any_value_count = with_values.length;
+    results.with_any_value = with_values.slice(0, 15);
   } catch (error: any) {
     results.error = error.message;
   }
