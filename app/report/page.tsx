@@ -277,6 +277,7 @@ export default async function ReportPage({
             </div>
           )}
 
+        {contaminants.length === 0 && <p style={{color: "red"}}>Debug: No contaminants found. Key: {!!process.env.WATER_API_KEY ? "yes" : "no"}</p>}
           <div className="contaminant-grid">
             {contaminants.map((c, i) => (
               <ContaminantCard key={i} data={c} />
