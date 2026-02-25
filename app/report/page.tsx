@@ -81,41 +81,14 @@ async function getContaminants(city: string, state: string): Promise<Contaminant
 
     if (!res2.ok) return [{ name: "DEBUG: results fetch failed status " + res2.status, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
 
-    var data2 = await res2.json();
-    if (data2.result !== "OK" || !data2.data) return [{ name: "DEBUG: no results for pwsid " + pwsid, description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
-
-    var mapped: ContaminantData[] = [];
-
-    for (var i = 0; i < data2.data.length; i++) {
-      var c = data2.data[i];
-
-      var detected = c.max || c.median;
-      if (detected === null || detected === undefined || detected <= 0) continue;
-
-      var detRate = c.detection_rate;
-      if (detRate) {
-        var parsed = parseFloat(String(detRate).replace("%", ""));
-        if (parsed <= 0) continue;
-      }
-
-      var guideline = null;
-      if (c.slr !== null && c.slr !== undefined && c.slr > 0) {
-        guideline = c.slr;
-      } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) {
-        guideline = c.fed_mcl;
-      }
-
-      if (!guideline) continue;
-
-      var timesAbove = Math.round(detected / guideline);
-      if (timesAbove < 2) continue;
-
-      var status: "exceeds" | "warning" | "ok" = "ok";
-      if (timesAbove >= 10) {
-        status = "exceeds";
-      } else if (timesAbove >= 2) {
-        status = "warning";
-      }
+    var text2 = await res2.text();
+    var data2: any = {};
+    try {
+      data2 = JSON.parse(text2);
+    } catch (e) {
+      return [{ name: "DEBUG: JSON parse failed. Length: " + text2.length + " Start: " + text2.substring(0, 100), description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
+    }
+    if (!data2.data) return [{ name: "DEBUG: no data field. Result: " + data2.result + " Keys: " + Object.keys(data2).join(","), description: "error", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning" }];
 
       var description = "";
       if (c.health_effects) {
