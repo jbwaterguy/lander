@@ -45,14 +45,21 @@ async function getReport(id: string): Promise<ReportData | null> {
   return result.data;
 }
 
-async function getContaminants(city: string, state: string): Promise<ContaminantData[]> {
+async function getContaminants(city: string, state: string, zip: string): Promise<ContaminantData[]> {
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
   try {
+    // Try city lookup first
     var r1 = await fetch("https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
-    if (!r1.ok) return [makeDebug("DEBUG: util fetch status " + r1.status)];
-    var d1 = await r1.json();
-    if (d1.result !== "OK" || !d1.data || d1.data.length === 0) return [makeDebug("DEBUG: no utils for " + city)];
+    var d1: any = null;
+    if (r1.ok) { d1 = await r1.json(); }
+    // If city lookup failed or returned no results, try zip code
+    if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
+      var r1z = await fetch("https://api.gosimplelab.com/api/utilities/list?zipcode=" + encodeURIComponent(zip), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
+      if (!r1z.ok) return [makeDebug("DEBUG: util fetch status " + r1z.status + " (tried city & zip)")];
+      d1 = await r1z.json();
+      if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) return [makeDebug("DEBUG: no utils for " + city + " / " + zip)];
+    }
     var pwsid = d1.data[0].pwsid;
     var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
     if (!r2.ok) return [makeDebug("DEBUG: results status " + r2.status)];
@@ -119,7 +126,7 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
   if (!report) return (<div className="not-found"><div><h1>Report Not Found</h1><p>We could not find this report.</p></div></div>);
   var lat = report.lat || DEFAULT_LAT;
   var lng = report.lng || DEFAULT_LNG;
-  var contaminants = await getContaminants(report.city, report.state);
+  var contaminants = await getContaminants(report.city, report.state, report.zip);
   var nearbyCustomers = await fetchNearbyCustomers(lat, lng);
   var reviewData = await getReviews(report.zip);
   var reviews = reviewData.reviews;
@@ -132,9 +139,9 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
   var fullAddress = report.address + ", " + report.city + ", " + report.state + " " + report.zip;
   return (
     <>
-     <section className="hero"><div className="hero-inner"><img src="https://aquaclearws.com/wp-content/uploads/2023/10/cropped-cropped-aqua-clear-web-transparent_logo-color.png" alt="Aqua Clear Water Systems" style={{ height: "90px", marginBottom: "24px", display: "block" }} /><div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust Aqua Clear.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose Aqua Clear Water Systems.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
+      <section className="hero"><div className="hero-inner"><div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust Aqua Clear.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose Aqua Clear Water Systems.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
 
-      <section className="map-section"><div className="section-inner"><span className="section-label">Your Neighborhood</span><h2 className="section-title">{nearbyCustomers.length} homes near you already enjoy Aqua Clear Water</h2><p className="section-subtitle">Each blue pin represents a family in your area who chose Aqua Clear to protect their home&apos;s water supply.</p><MapSection centerLat={lat} centerLng={lng} customers={nearbyCustomers} clientName={firstName} customerCount={nearbyCustomers.length} /></div></section>
+      <section className="map-section"><div className="section-inner"><span className="section-label">Your Neighborhood</span><h2 className="section-title">{nearbyCustomers.length} homes near you already have clean water</h2><p className="section-subtitle">Each blue pin represents a family in your area who chose Aqua Clear to protect their home&apos;s water supply.</p><MapSection centerLat={lat} centerLng={lng} customers={nearbyCustomers} clientName={firstName} customerCount={nearbyCustomers.length} /></div></section>
 
       <section className="contaminants-section"><div className="section-inner"><span className="section-label">Your City Water Report &mdash; {report.zip}</span><h2 className="section-title">What&apos;s in your tap water right now</h2><p className="section-subtitle">Based on the most recent water quality data for your area. Tap any contaminant to learn about its health effects.</p>{totalBad > 0 && (<div className="alert-banner"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ee5a24" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg><div><strong>{totalBad} contaminant{totalBad > 1 ? "s" : ""} exceed health guidelines</strong><p>Your area&apos;s water contains contaminants above levels recommended for safe consumption.</p></div></div>)}<div className="contaminant-grid">{contaminants.map(function(c, i) { return <ContaminantCard key={i} data={c} />; })}</div></div></section>
 
@@ -146,7 +153,7 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
 
       <section className="cta-section"><div className="section-inner"><h2 className="section-title">Questions before your appointment?</h2><p className="section-subtitle">We&apos;re happy to help. Give us a call anytime.</p><a href="tel:8652256555" className="cta-btn">Call (865) 225-6555<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z" /></svg></a><div className="cta-trust">We look forward to meeting you!</div></div></section>
 
-      <footer><p>&copy; 2026 Aqua Clear Water Systems &middot; <a href="https://aquaclearws.com" style={{ color: "#41B6E6", textDecoration: "none" }}>aquaclearws.com</a></p></footer>
+      <footer><p>&copy; 2026 Aqua Clear Water Systems &middot; Proudly serving East &amp; Middle Tennessee &middot; <a href="https://aquaclearws.com" style={{ color: "#41B6E6", textDecoration: "none" }}>aquaclearws.com</a></p></footer>
     </>
   );
 }
