@@ -46,6 +46,17 @@ async function getReport(id: string): Promise<ReportData | null> {
 }
 
 async function getContaminants(city: string, state: string, zip: string): Promise<ContaminantData[]> {
+  // ─── Step 1: Check Supabase cache first (costs 0 API calls) ───
+  var cached = await supabase.from("water_cache").select("data, fetched_at").eq("zip", zip).single();
+  if (cached.data && cached.data.data) {
+    var age = Date.now() - new Date(cached.data.fetched_at).getTime();
+    var ninetyDays = 90 * 24 * 60 * 60 * 1000;
+    if (age < ninetyDays) {
+      return cached.data.data as ContaminantData[];
+    }
+  }
+
+  // ─── Step 2: Not cached — call SimpleLab API ───
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
   try {
@@ -53,12 +64,24 @@ async function getContaminants(city: string, state: string, zip: string): Promis
     var r1 = await fetch("https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
     var d1: any = null;
     if (r1.ok) { d1 = await r1.json(); }
-    // If city lookup failed or returned no results, try zip code
+    // If city lookup failed, try zip code with different param names
     if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
-      var r1z = await fetch("https://api.gosimplelab.com/api/utilities/list?zipcode=" + encodeURIComponent(zip), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
-      if (!r1z.ok) return [makeDebug("DEBUG: util fetch status " + r1z.status + " (tried city & zip)")];
-      d1 = await r1z.json();
-      if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) return [makeDebug("DEBUG: no utils for " + city + " / " + zip)];
+      var zipParams = ["zip_code", "zipcode", "zip"];
+      var foundViaZip = false;
+      var debugInfo = "city=" + city + " status=" + (r1 ? r1.status : "null");
+      for (var zi = 0; zi < zipParams.length; zi++) {
+        var r1z = await fetch("https://api.gosimplelab.com/api/utilities/list?" + zipParams[zi] + "=" + encodeURIComponent(zip), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
+        if (r1z.ok) {
+          var d1z = await r1z.json();
+          if (d1z && d1z.result === "OK" && d1z.data && d1z.data.length > 0) { d1 = d1z; foundViaZip = true; break; }
+          debugInfo += " | " + zipParams[zi] + "=" + r1z.status + " result=" + (d1z ? d1z.result : "null") + " count=" + (d1z && d1z.data ? d1z.data.length : 0);
+        } else {
+          debugInfo += " | " + zipParams[zi] + "=" + r1z.status;
+        }
+      }
+      if (!foundViaZip) {
+        return [makeDebug("DEBUG: no utils. " + debugInfo)];
+      }
     }
     var pwsid = d1.data[0].pwsid;
     var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
@@ -92,6 +115,10 @@ async function getContaminants(city: string, state: string, zip: string): Promis
     mapped.sort(function(a, b) { var o: Record<string, number> = {exceeds:0,warning:1,ok:2}; if (o[a.status] !== o[b.status]) return o[a.status] - o[b.status]; return b.times_above_guideline - a.times_above_guideline; });
     var sl = mapped.slice(0, 8);
     if (sl.length === 0) return [makeDebug("DEBUG: 0 passed filter of " + d2.data.length)];
+
+    // ─── Step 3: Save to cache so we never call the API for this zip again ───
+    await supabase.from("water_cache").upsert({ zip: zip, data: sl, pwsid: pwsid, fetched_at: new Date().toISOString() }, { onConflict: "zip" });
+
     return sl;
   } catch (err: any) { return [makeDebug("DEBUG ERR: " + err.message)]; }
 }
