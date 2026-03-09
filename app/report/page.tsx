@@ -56,7 +56,7 @@ async function getContaminants(city: string, state: string, zip: string): Promis
     }
   }
 
-  // ─── Step 2: Not cached — call SimpleLab API ───
+  // ─── Step 2: Not cached — find ALL utilities for this zip ───
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
   try {
@@ -83,41 +83,61 @@ async function getContaminants(city: string, state: string, zip: string): Promis
         return [makeDebug("DEBUG: no utils. " + debugInfo)];
       }
     }
-    var pwsid = d1.data[0].pwsid;
-    var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
-    if (!r2.ok) return [makeDebug("DEBUG: results status " + r2.status)];
-    var txt = await r2.text();
-    var d2: any = {};
-    try { d2 = JSON.parse(txt); } catch (e) { return [makeDebug("DEBUG: parse fail len=" + txt.length)]; }
-    if (!d2.data) return [makeDebug("DEBUG: no data. keys=" + Object.keys(d2).join(","))];
-    var mapped: ContaminantData[] = [];
-    for (var i = 0; i < d2.data.length; i++) {
-      var c = d2.data[i];
-      var det = c.max || c.median;
-      if (det === null || det === undefined || det <= 0) continue;
-      var dr = c.detection_rate;
-      if (dr) { var p = parseFloat(String(dr).replace("%", "")); if (p <= 0) continue; }
-      var gl: number | null = null;
-      if (c.slr !== null && c.slr !== undefined && c.slr > 0) { gl = c.slr; } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) { gl = c.fed_mcl; }
-      if (!gl) continue;
-      var ta = Math.round(det / gl);
-      if (ta < 2) continue;
-      var st: "exceeds" | "warning" | "ok" = ta >= 10 ? "exceeds" : "warning";
-      var desc = "";
-      if (c.health_effects) { var s = c.health_effects.split(". ")[0]; desc = s.length > 120 ? s.substring(0, 117) + "..." : s; } else if (c.sources) { var s2 = c.sources.split(". ")[0]; desc = s2.length > 120 ? s2.substring(0, 117) + "..." : s2; } else { desc = (c.type || "Contaminant") + " detected in your water"; }
-      var bodyEffects: string[] = [];
-      if (c.body_effects) {
-        if (Array.isArray(c.body_effects)) { bodyEffects = c.body_effects; }
-        else if (typeof c.body_effects === "string") { bodyEffects = c.body_effects.split(",").map(function(x: string) { return x.trim(); }); }
+
+    // ─── Step 3: Fetch results from ALL utilities (not just the first) ───
+    var utilities = d1.data;
+    var allPwsids: string[] = [];
+    var contaminantMap: Record<string, ContaminantData> = {};
+
+    for (var u = 0; u < utilities.length; u++) {
+      var pwsid = utilities[u].pwsid;
+      if (!pwsid) continue;
+      allPwsids.push(pwsid);
+
+      var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
+      if (!r2.ok) continue;
+      var txt = await r2.text();
+      var d2: any = {};
+      try { d2 = JSON.parse(txt); } catch (e) { continue; }
+      if (!d2.data) continue;
+
+      for (var i = 0; i < d2.data.length; i++) {
+        var c = d2.data[i];
+        var det = c.max || c.median;
+        if (det === null || det === undefined || det <= 0) continue;
+        var dr = c.detection_rate;
+        if (dr) { var p = parseFloat(String(dr).replace("%", "")); if (p <= 0) continue; }
+        var gl: number | null = null;
+        if (c.slr !== null && c.slr !== undefined && c.slr > 0) { gl = c.slr; } else if (c.fed_mcl !== null && c.fed_mcl !== undefined && c.fed_mcl > 0) { gl = c.fed_mcl; }
+        if (!gl) continue;
+        var ta = Math.round(det / gl);
+        if (ta < 2) continue;
+        var st: "exceeds" | "warning" | "ok" = ta >= 10 ? "exceeds" : "warning";
+        var desc = "";
+        if (c.health_effects) { var s = c.health_effects.split(". ")[0]; desc = s.length > 120 ? s.substring(0, 117) + "..." : s; } else if (c.sources) { var s2 = c.sources.split(". ")[0]; desc = s2.length > 120 ? s2.substring(0, 117) + "..." : s2; } else { desc = (c.type || "Contaminant") + " detected in your water"; }
+        var bodyEffects: string[] = [];
+        if (c.body_effects) {
+          if (Array.isArray(c.body_effects)) { bodyEffects = c.body_effects; }
+          else if (typeof c.body_effects === "string") { bodyEffects = c.body_effects.split(",").map(function(x: string) { return x.trim(); }); }
+        }
+
+        // If we already have this contaminant, keep the worst (highest) reading
+        var existing = contaminantMap[c.name];
+        if (!existing || ta > existing.times_above_guideline) {
+          contaminantMap[c.name] = { name: c.name, description: desc, detected_level: det, unit: c.unit || "PPB", ewg_guideline: gl, epa_limit: c.fed_mcl || 0, times_above_guideline: ta, status: st, health_effects: c.health_effects || "", sources: c.sources || "", body_effects: bodyEffects };
+        }
       }
-      mapped.push({ name: c.name, description: desc, detected_level: det, unit: c.unit || "PPB", ewg_guideline: gl, epa_limit: c.fed_mcl || 0, times_above_guideline: ta, status: st, health_effects: c.health_effects || "", sources: c.sources || "", body_effects: bodyEffects });
     }
+
+    // Convert map to sorted array
+    var mapped: ContaminantData[] = [];
+    for (var key in contaminantMap) { mapped.push(contaminantMap[key]); }
     mapped.sort(function(a, b) { var o: Record<string, number> = {exceeds:0,warning:1,ok:2}; if (o[a.status] !== o[b.status]) return o[a.status] - o[b.status]; return b.times_above_guideline - a.times_above_guideline; });
     var sl = mapped.slice(0, 8);
-    if (sl.length === 0) return [makeDebug("DEBUG: 0 passed filter of " + d2.data.length)];
+    if (sl.length === 0) return [makeDebug("DEBUG: 0 passed filter from " + utilities.length + " utilities (" + allPwsids.join(",") + ")")];
 
-    // ─── Step 3: Save to cache so we never call the API for this zip again ───
-    await supabase.from("water_cache").upsert({ zip: zip, data: sl, pwsid: pwsid, fetched_at: new Date().toISOString() }, { onConflict: "zip" });
+    // ─── Step 4: Save to cache so we never call the API for this zip again ───
+    await supabase.from("water_cache").upsert({ zip: zip, data: sl, pwsid: allPwsids.join(","), fetched_at: new Date().toISOString() }, { onConflict: "zip" });
 
     return sl;
   } catch (err: any) { return [makeDebug("DEBUG ERR: " + err.message)]; }
