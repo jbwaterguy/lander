@@ -41,7 +41,37 @@ function makeDebug(msg: string): ContaminantData {
 async function getReport(id: string): Promise<ReportData | null> {
   var result = await supabase.from("reports").select("*").eq("id", id).single();
   if (result.error || !result.data) return null;
-  await supabase.from("reports").update({ viewed: true }).eq("id", id);
+
+  var isFirstView = !result.data.viewed;
+  var viewCount = (result.data.view_count || 0) + 1;
+
+  // Update viewed status, timestamp, and count
+  await supabase.from("reports").update({
+    viewed: true,
+    viewed_at: isFirstView ? new Date().toISOString() : result.data.viewed_at,
+    view_count: viewCount
+  }).eq("id", id);
+
+  // Fire webhook to Zapier on FIRST view only (so CRM gets notified once)
+  if (isFirstView && process.env.ZAPIER_VIEWED_WEBHOOK) {
+    try {
+      await fetch(process.env.ZAPIER_VIEWED_WEBHOOK, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          report_id: id,
+          client_name: result.data.client_name,
+          phone: result.data.phone || "",
+          address: result.data.address,
+          city: result.data.city,
+          state: result.data.state,
+          zip: result.data.zip,
+          viewed_at: new Date().toISOString()
+        })
+      });
+    } catch (e) { /* don't block page load if webhook fails */ }
+  }
+
   return result.data;
 }
 
