@@ -1,125 +1,112 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
-import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
-/**
- * POST /api/create-report
- *
- * Auto-geocodes the address if lat/lng not provided.
- * lat/lng are now fully optional — just pass the street address.
- */
+var supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+function generateId(): string {
+  var chars = "abcdef0123456789";
+  var id = "";
+  for (var i = 0; i < 12; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
 
 async function geocodeAddress(address: string, city: string, state: string, zip: string): Promise<{ lat: number; lng: number } | null> {
-  const fullAddress = `${address}, ${city}, ${state} ${zip}`;
-  
-  // Try US Census Geocoder first (free, no key needed)
+  var fullAddress = address + ", " + city + ", " + state + " " + zip;
   try {
-    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(fullAddress)}&benchmark=Public_AR_Current&format=json`;
-    const res = await fetch(censusUrl, { signal: AbortSignal.timeout(5000) });
-    const data = await res.json();
-    const match = data?.result?.addressMatches?.[0];
-    if (match?.coordinates) {
-      return { lat: match.coordinates.y, lng: match.coordinates.x };
+    var censusUrl = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=" + encodeURIComponent(fullAddress) + "&benchmark=Public_AR_Current&format=json";
+    var r1 = await fetch(censusUrl, { signal: AbortSignal.timeout(5000) });
+    if (r1.ok) {
+      var d1 = await r1.json();
+      if (d1.result && d1.result.addressMatches && d1.result.addressMatches.length > 0) {
+        var match = d1.result.addressMatches[0].coordinates;
+        return { lat: match.y, lng: match.x };
+      }
     }
-  } catch (e) {
-    console.error("Census geocoder failed:", e);
-  }
-
-  // Fallback: OpenStreetMap Nominatim (free, no key needed)
+  } catch (e) { /* fall through */ }
   try {
-    const nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fullAddress)}&format=json&limit=1`;
-    const res = await fetch(nominatimUrl, {
-      headers: { "User-Agent": "AquaClearWaterReports/1.0" },
-      signal: AbortSignal.timeout(5000),
-    });
-    const data = await res.json();
-    if (data?.[0]) {
-      return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+    var nomUrl = "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(fullAddress) + "&format=json&limit=1&countrycodes=us";
+    var r2 = await fetch(nomUrl, { headers: { "User-Agent": "WaterReportApp/1.0" }, signal: AbortSignal.timeout(5000) });
+    if (r2.ok) {
+      var d2 = await r2.json();
+      if (d2.length > 0) return { lat: parseFloat(d2[0].lat), lng: parseFloat(d2[0].lon) };
     }
-  } catch (e) {
-    console.error("Nominatim geocoder failed:", e);
-  }
-
+  } catch (e) { /* no geocode */ }
   return null;
 }
 
 export async function POST(request: NextRequest) {
-  // — Auth check —
-  const authHeader = request.headers.get("authorization");
-  const expectedToken = `Bearer ${process.env.API_SECRET}`;
-
-  if (!authHeader || authHeader !== expectedToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
-    const body = await request.json();
+    // ─── Authenticate: find company by API secret ───
+    var authHeader = request.headers.get("Authorization") || "";
+    var secret = authHeader.replace("Bearer ", "").trim();
+    if (!secret) {
+      return NextResponse.json({ error: "Missing Authorization header" }, { status: 401 });
+    }
 
-    // — Validate required fields —
-    const { client_name, address, city, state, zip } = body;
+    var { data: company, error: companyError } = await supabase
+      .from("companies")
+      .select("id, domain, slug")
+      .eq("api_secret", secret)
+      .eq("active", true)
+      .single();
+
+    if (companyError || !company) {
+      return NextResponse.json({ error: "Invalid API secret" }, { status: 401 });
+    }
+
+    // ─── Parse body ───
+    var body = await request.json();
+    var { client_name, address, city, state, zip, phone, lat, lng } = body;
+
     if (!client_name || !address || !city || !state || !zip) {
-      return NextResponse.json(
-        { error: "Missing required fields: client_name, address, city, state, zip" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Missing required fields: client_name, address, city, state, zip" }, { status: 400 });
     }
 
-    // — Auto-geocode if lat/lng not provided —
-    let lat = body.lat || null;
-    let lng = body.lng || null;
-
+    // ─── Geocode if needed ───
+    var geocoded = false;
     if (!lat || !lng) {
-      const coords = await geocodeAddress(address, city, state, zip);
-      if (coords) {
-        lat = coords.lat;
-        lng = coords.lng;
-      }
+      var coords = await geocodeAddress(address, city, state, zip);
+      if (coords) { lat = coords.lat; lng = coords.lng; geocoded = true; }
     }
 
-    // — Generate unique report ID (short, URL-safe) —
-    const report_id = crypto.randomBytes(6).toString("hex");
-
-    // — Insert into Supabase —
-    const { error } = await supabaseAdmin.from("reports").insert({
-      id: report_id,
-      client_name: body.client_name,
-      address: body.address,
-      city: body.city,
-      state: body.state,
-      zip: body.zip,
-      phone: body.phone || null,
-      lat,
-      lng,
-      created_at: new Date().toISOString(),
-      viewed: false,
+    // ─── Create report ───
+    var id = generateId();
+    var { error: insertError } = await supabase.from("reports").insert({
+      id: id,
+      client_name: client_name,
+      address: address,
+      city: city,
+      state: state,
+      zip: zip,
+      phone: phone || null,
+      lat: lat || null,
+      lng: lng || null,
+      company_id: company.id
     });
 
-    if (error) {
-      console.error("Supabase insert error:", error);
-      return NextResponse.json(
-        { error: "Failed to create report" },
-        { status: 500 }
-      );
+    if (insertError) {
+      return NextResponse.json({ error: "Failed to create report", details: insertError.message }, { status: 500 });
     }
 
-    // — Return the unique URL —
-    const baseUrl =
-      process.env.NEXT_PUBLIC_SITE_URL ||
-      `https://${request.headers.get("host")}`;
-    const reportUrl = `${baseUrl}/report?id=${report_id}`;
+    // Build URL using company's custom domain
+    var domain = company.domain || request.headers.get("host") || "localhost:3000";
+    var protocol = domain.includes("localhost") ? "http" : "https";
+    var url = protocol + "://" + domain + "/report?id=" + id;
 
     return NextResponse.json({
-      success: true,
-      report_id,
-      url: reportUrl,
-      geocoded: !body.lat || !body.lng ? true : false,
-      coordinates: { lat, lng },
+      id: id,
+      url: url,
+      company: company.slug,
+      geocoded: geocoded,
+      coordinates: lat && lng ? { lat: lat, lng: lng } : null
     });
-  } catch (err) {
-    console.error("Create report error:", err);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+
+  } catch (err: any) {
+    return NextResponse.json({ error: "Server error", details: err.message }, { status: 500 });
   }
 }
