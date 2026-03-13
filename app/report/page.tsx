@@ -1,4 +1,4 @@
-// cache bust v11 - dynamic reviews from Supabase
+// Multi-tenant water report landing page
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -20,6 +20,27 @@ interface ContaminantData {
   body_effects: string[];
 }
 
+interface CompanyData {
+  id: string;
+  slug: string;
+  name: string;
+  phone: string;
+  website: string;
+  logo_url: string;
+  domain: string;
+  color_primary: string;
+  color_accent: string;
+  color_cta: string;
+  tagline: string;
+  years_in_business: number;
+  bbb_rating: string;
+  homes_served: string;
+  trust_points: { icon: string; label: string }[];
+  appointment_duration: number;
+  appointment_steps: { title: string; description: string }[];
+  webhook_viewed: string | null;
+}
+
 interface ReportData {
   id: string;
   client_name: string;
@@ -29,6 +50,11 @@ interface ReportData {
   zip: string;
   lat: number | null;
   lng: number | null;
+  company_id: string;
+  phone?: string;
+  viewed?: boolean;
+  viewed_at?: string;
+  view_count?: number;
 }
 
 var DEFAULT_LAT = 35.8868;
@@ -38,24 +64,31 @@ function makeDebug(msg: string): ContaminantData {
   return { name: msg, description: "debug", detected_level: 0, unit: "", ewg_guideline: 0, epa_limit: 0, times_above_guideline: 0, status: "warning", health_effects: "", sources: "", body_effects: [] };
 }
 
-async function getReport(id: string): Promise<ReportData | null> {
+// ─── Get company from report's company_id ───
+async function getCompany(companyId: string): Promise<CompanyData | null> {
+  var result = await supabase.from("companies").select("*").eq("id", companyId).eq("active", true).single();
+  if (result.error || !result.data) return null;
+  return result.data;
+}
+
+// ─── Get report and track views ───
+async function getReport(id: string, company?: CompanyData | null): Promise<ReportData | null> {
   var result = await supabase.from("reports").select("*").eq("id", id).single();
   if (result.error || !result.data) return null;
 
   var isFirstView = !result.data.viewed;
   var viewCount = (result.data.view_count || 0) + 1;
 
-  // Update viewed status, timestamp, and count
   await supabase.from("reports").update({
     viewed: true,
     viewed_at: isFirstView ? new Date().toISOString() : result.data.viewed_at,
     view_count: viewCount
   }).eq("id", id);
 
-  // Fire webhook to Zapier on FIRST view only (so CRM gets notified once)
-  if (isFirstView && process.env.ZAPIER_VIEWED_WEBHOOK) {
+  var webhookUrl = company?.webhook_viewed || process.env.ZAPIER_VIEWED_WEBHOOK;
+  if (isFirstView && webhookUrl) {
     try {
-      await fetch(process.env.ZAPIER_VIEWED_WEBHOOK, {
+      await fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -69,32 +102,27 @@ async function getReport(id: string): Promise<ReportData | null> {
           viewed_at: new Date().toISOString()
         })
       });
-    } catch (e) { /* don't block page load if webhook fails */ }
+    } catch (e) { /* don't block page load */ }
   }
 
   return result.data;
 }
 
+// ─── Get contaminants (shared water cache — not company-specific) ───
 async function getContaminants(city: string, state: string, zip: string): Promise<ContaminantData[]> {
-  // ─── Step 1: Check Supabase cache first (costs 0 API calls) ───
   var cached = await supabase.from("water_cache").select("data, fetched_at").eq("zip", zip).single();
   if (cached.data && cached.data.data) {
     var age = Date.now() - new Date(cached.data.fetched_at).getTime();
     var ninetyDays = 90 * 24 * 60 * 60 * 1000;
-    if (age < ninetyDays) {
-      return cached.data.data as ContaminantData[];
-    }
+    if (age < ninetyDays) return cached.data.data as ContaminantData[];
   }
 
-  // ─── Step 2: Not cached — find ALL utilities for this zip ───
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
   try {
-    // Try city lookup first
     var r1 = await fetch("https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
     var d1: any = null;
     if (r1.ok) { d1 = await r1.json(); }
-    // If city lookup failed, try zip code with different param names
     if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
       var zipParams = ["zip_code", "zipcode", "zip"];
       var foundViaZip = false;
@@ -105,32 +133,24 @@ async function getContaminants(city: string, state: string, zip: string): Promis
           var d1z = await r1z.json();
           if (d1z && d1z.result === "OK" && d1z.data && d1z.data.length > 0) { d1 = d1z; foundViaZip = true; break; }
           debugInfo += " | " + zipParams[zi] + "=" + r1z.status + " result=" + (d1z ? d1z.result : "null") + " count=" + (d1z && d1z.data ? d1z.data.length : 0);
-        } else {
-          debugInfo += " | " + zipParams[zi] + "=" + r1z.status;
-        }
+        } else { debugInfo += " | " + zipParams[zi] + "=" + r1z.status; }
       }
-      if (!foundViaZip) {
-        return [makeDebug("DEBUG: no utils. " + debugInfo)];
-      }
+      if (!foundViaZip) return [makeDebug("DEBUG: no utils. " + debugInfo)];
     }
 
-    // ─── Step 3: Fetch results from ALL utilities (not just the first) ───
     var utilities = d1.data;
     var allPwsids: string[] = [];
     var contaminantMap: Record<string, ContaminantData> = {};
-
     for (var u = 0; u < utilities.length; u++) {
       var pwsid = utilities[u].pwsid;
       if (!pwsid) continue;
       allPwsids.push(pwsid);
-
       var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
       if (!r2.ok) continue;
       var txt = await r2.text();
       var d2: any = {};
       try { d2 = JSON.parse(txt); } catch (e) { continue; }
       if (!d2.data) continue;
-
       for (var i = 0; i < d2.data.length; i++) {
         var c = d2.data[i];
         var det = c.max || c.median;
@@ -150,62 +170,68 @@ async function getContaminants(city: string, state: string, zip: string): Promis
           if (Array.isArray(c.body_effects)) { bodyEffects = c.body_effects; }
           else if (typeof c.body_effects === "string") { bodyEffects = c.body_effects.split(",").map(function(x: string) { return x.trim(); }); }
         }
-
-        // If we already have this contaminant, keep the worst (highest) reading
         var existing = contaminantMap[c.name];
         if (!existing || ta > existing.times_above_guideline) {
           contaminantMap[c.name] = { name: c.name, description: desc, detected_level: det, unit: c.unit || "PPB", ewg_guideline: gl, epa_limit: c.fed_mcl || 0, times_above_guideline: ta, status: st, health_effects: c.health_effects || "", sources: c.sources || "", body_effects: bodyEffects };
         }
       }
     }
-
-    // Convert map to sorted array
     var mapped: ContaminantData[] = [];
     for (var key in contaminantMap) { mapped.push(contaminantMap[key]); }
     mapped.sort(function(a, b) { var o: Record<string, number> = {exceeds:0,warning:1,ok:2}; if (o[a.status] !== o[b.status]) return o[a.status] - o[b.status]; return b.times_above_guideline - a.times_above_guideline; });
     var sl = mapped.slice(0, 8);
-    if (sl.length === 0) return [makeDebug("DEBUG: 0 passed filter from " + utilities.length + " utilities (" + allPwsids.join(",") + ")")];
-
-    // ─── Step 4: Save to cache so we never call the API for this zip again ───
+    if (sl.length === 0) return [makeDebug("DEBUG: 0 passed filter from " + utilities.length + " utilities")];
     await supabase.from("water_cache").upsert({ zip: zip, data: sl, pwsid: allPwsids.join(","), fetched_at: new Date().toISOString() }, { onConflict: "zip" });
-
     return sl;
   } catch (err: any) { return [makeDebug("DEBUG ERR: " + err.message)]; }
 }
 
-async function getReviews(zip: string): Promise<{ reviews: { author: string; quote: string }[]; zipCount: number; totalCount: number }> {
-  // Get ALL 5-star reviews for this zip
-  var local = await supabase.from("reviews").select("author, quote").eq("zip", zip).eq("rating", 5);
-  var zipReviews: { author: string; quote: string }[] = local.data || [];
+// ─── Get reviews scoped by company ───
+async function getReviews(zip: string, companyId: string): Promise<{ reviews: { author: string; quote: string }[]; zipCount: number; totalCount: number }> {
+  var local = await supabase.from("reviews").select("author, quote").eq("zip", zip).eq("rating", 5).eq("company_id", companyId);
+  var zipReviews: { author: string; quote: string }[] = (local.data || []).filter(function(r) { return r.quote && r.quote.trim().length > 0; });
   var zipCount = zipReviews.length;
 
-  // Get total count of ALL 5-star reviews
-  var totalResult = await supabase.from("reviews").select("id", { count: "exact", head: true }).eq("rating", 5);
+  var totalResult = await supabase.from("reviews").select("id", { count: "exact", head: true }).eq("rating", 5).eq("company_id", companyId);
   var totalCount = totalResult.count || 0;
 
-  // If we don't have at least 4 zip reviews, fill with random 5-star reviews from other zips
   var reviews = [...zipReviews];
   if (reviews.length < 4) {
     var remaining = 4 - reviews.length;
     var localAuthors = reviews.map(function(r) { return r.author; });
-    var fill = await supabase.from("reviews").select("author, quote").eq("rating", 5).neq("zip", zip).limit(remaining * 3);
-    var pool = (fill.data || []).filter(function(r) { return localAuthors.indexOf(r.author) === -1; });
+    var fill = await supabase.from("reviews").select("author, quote").eq("rating", 5).eq("company_id", companyId).neq("zip", zip).limit(remaining * 3);
+    var pool = (fill.data || []).filter(function(r) { return r.quote && r.quote.trim().length > 0 && localAuthors.indexOf(r.author) === -1; });
     for (var i = pool.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
     reviews = reviews.concat(pool.slice(0, remaining));
   }
   return { reviews: reviews, zipCount: zipCount, totalCount: totalCount };
 }
 
+// ═══ MAIN PAGE ═══
 export default async function ReportPage({ searchParams }: { searchParams: { id?: string } }) {
   var id = searchParams.id;
   if (!id) return (<div className="not-found"><div><h1>Report Not Found</h1><p>Check your text message for the correct link.</p></div></div>);
-  var report = await getReport(id);
-  if (!report) return (<div className="not-found"><div><h1>Report Not Found</h1><p>We could not find this report.</p></div></div>);
+
+  // Get report first to find company_id
+  var reportRaw = await supabase.from("reports").select("*").eq("id", id).single();
+  if (reportRaw.error || !reportRaw.data) return (<div className="not-found"><div><h1>Report Not Found</h1><p>We could not find this report.</p></div></div>);
+
+  // Get the company for this report
+  var co = await getCompany(reportRaw.data.company_id);
+  if (!co) return (<div className="not-found"><div><h1>Report Not Found</h1><p>This report is no longer available.</p></div></div>);
+
+  // Track the view (with company webhook)
+  var report = await getReport(id, co) as ReportData;
   var lat = report.lat || DEFAULT_LAT;
   var lng = report.lng || DEFAULT_LNG;
-  var contaminants = await getContaminants(report.city, report.state, report.zip);
-  var nearbyCustomers = await fetchNearbyCustomers(lat, lng);
-  var reviewData = await getReviews(report.zip);
+
+  // Fetch all data — customers and reviews scoped to company
+  var [contaminants, nearbyCustomers, reviewData] = await Promise.all([
+    getContaminants(report.city, report.state, report.zip),
+    fetchNearbyCustomers(lat, lng, co.id),
+    getReviews(report.zip, co.id)
+  ]);
+
   var reviews = reviewData.reviews;
   var zipReviewCount = reviewData.zipCount;
   var totalReviewCount = reviewData.totalCount;
@@ -214,26 +240,35 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
   var totalBad = contaminants.filter(function(c) { return c.status === "exceeds" || c.status === "warning"; }).length;
   var firstName = report.client_name.split(" ")[0];
   var fullAddress = report.address + ", " + report.city + ", " + report.state + " " + report.zip;
+  var phoneDigits = (co.phone || "").replace(/\D/g, "");
+  var steps = co.appointment_steps || [];
+  var trustPoints = co.trust_points || [];
+
   return (
     <>
-      <section className="hero"><div className="hero-inner"><div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust Aqua Clear.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose Aqua Clear Water Systems.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
+      {/* Inject company brand colors as CSS variables */}
+      <style dangerouslySetInnerHTML={{ __html: `:root { --brand-primary: ${co.color_primary}; --brand-accent: ${co.color_accent}; --brand-cta: ${co.color_cta}; }` }} />
 
-      <section className="map-section"><div className="section-inner"><span className="section-label">Your Neighborhood</span><h2 className="section-title">{nearbyCustomers.length} homes near you already have clean water</h2><p className="section-subtitle">Each blue pin represents a family in your area who chose Aqua Clear to protect their home&apos;s water supply.</p><MapSection centerLat={lat} centerLng={lng} customers={nearbyCustomers} clientName={firstName} customerCount={nearbyCustomers.length} /></div></section>
+      <section className="hero"><div className="hero-inner">{co.logo_url && (<img src={co.logo_url} alt={co.name} style={{ height: "72px", marginBottom: "24px", display: "block" }} />)}<div className="hero-badge"><span className="dot"></span>Personalized Water Report</div><h1><span className="client-name">{report.client_name}</span>,<br />your neighbors already trust {co.name.split(" ")[0]}.</h1><p className="hero-sub">We prepared this water quality report specifically for your home at {report.address}. See what&apos;s really in your tap water &mdash; and why {nearbyCustomers.length} families near you chose {co.name}.</p><div className="hero-address"><svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" /><circle cx="12" cy="9" r="2.5" /></svg>{fullAddress}</div></div></section>
+
+      <section className="map-section"><div className="section-inner"><span className="section-label">Your Neighborhood</span><h2 className="section-title">{nearbyCustomers.length} homes near you already have clean water</h2><p className="section-subtitle">Each blue pin represents a family in your area who chose {co.name} to protect their home&apos;s water supply.</p><MapSection centerLat={lat} centerLng={lng} customers={nearbyCustomers} clientName={firstName} customerCount={nearbyCustomers.length} /></div></section>
 
       <section className="contaminants-section"><div className="section-inner"><span className="section-label">Your City Water Report &mdash; {report.zip}</span><h2 className="section-title">What&apos;s in your tap water right now</h2><p className="section-subtitle">Based on the most recent water quality data for your area. Tap any contaminant to learn about its health effects.</p>{totalBad > 0 && (<div className="alert-banner"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ee5a24" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg><div><strong>{totalBad} contaminant{totalBad > 1 ? "s" : ""} exceed health guidelines</strong><p>Your area&apos;s water contains contaminants above levels recommended for safe consumption.</p></div></div>)}<div className="contaminant-grid">{contaminants.map(function(c, i) { return <ContaminantCard key={i} data={c} />; })}</div></div></section>
 
       <section className="social-section"><div className="section-inner"><span className="section-label">From Your Neighbors</span><h2 className="section-title">What families in {report.city} are saying</h2><p className="section-subtitle">Real reviews from homeowners near your address.</p><div className="review-counts"><div className="review-count-badge"><span className="review-count-num">{zipReviewCount}</span> five-star reviews in {report.zip}</div><div className="review-count-badge total"><span className="review-count-num">{totalReviewCount.toLocaleString()}</span> total five-star reviews</div></div><div className="testimonial-cards">{firstReviews.map(function(r, i) { return <TestimonialCard key={i} quote={r.quote} author={r.author} />; })}</div>{extraReviews.length > 0 && (<details className="more-reviews"><summary className="more-reviews-btn">Read {extraReviews.length} More Review{extraReviews.length > 1 ? "s" : ""} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9" /></svg></summary><div className="testimonial-cards extra-reviews-grid">{extraReviews.map(function(r, i) { return <TestimonialCard key={i + 4} quote={r.quote} author={r.author} />; })}</div></details>)}</div></section>
 
-      <section className="expect-section"><div className="section-inner"><span className="section-label">Your Upcoming Appointment</span><h2 className="section-title">Here&apos;s what to expect</h2><p className="section-subtitle">Your appointment takes about 60 minutes. No surprises, no pressure &mdash; just honest answers about your water.</p><div className="expect-steps"><div className="expect-step"><div className="step-num">1</div><div className="step-content"><h3>We test your water</h3><p>Your water specialist will run a quick test right at your kitchen tap. You&apos;ll see the results in real time &mdash; no lab wait, no guessing.</p></div></div><div className="expect-step"><div className="step-num">2</div><div className="step-content"><h3>We walk you through the results</h3><p>We&apos;ll show you exactly what&apos;s in your water, how it compares to health guidelines, and what it means for your family. Ask us anything.</p></div></div><div className="expect-step"><div className="step-num">3</div><div className="step-content"><h3>We present your options</h3><p>If you&apos;d like to move forward, we&apos;ll walk through solutions that fit your home and budget. Financing available. If not, no hard feelings &mdash; the water test is yours to keep either way.</p></div></div></div></div></section>
+      {steps.length > 0 && (<section className="expect-section"><div className="section-inner"><span className="section-label">Your Upcoming Appointment</span><h2 className="section-title">Here&apos;s what to expect</h2><p className="section-subtitle">Your appointment takes about {co.appointment_duration} minutes. No surprises, no pressure &mdash; just honest answers about your water.</p><div className="expect-steps">{steps.map(function(step, i) { return (<div key={i} className="expect-step"><div className="step-num">{i + 1}</div><div className="step-content"><h3>{step.title}</h3><p>{step.description}</p></div></div>); })}</div></div></section>)}
 
-      <section className="trust-section"><div className="section-inner"><span className="section-label" style={{ color: "#84BD00" }}>Why Families Choose Aqua Clear</span><h2 className="section-title">Built on trust for over 20 years</h2><div className="trust-grid"><div className="trust-card"><div className="trust-icon">&#128106;</div><div className="trust-label">Family Owned<br />&amp; Operated</div></div><div className="trust-card"><div className="trust-icon">&#127942;</div><div className="trust-label">20+ Years<br />In Business</div></div><div className="trust-card"><div className="trust-icon">&#11088;</div><div className="trust-label">A+ BBB<br />Rating</div></div><div className="trust-card"><div className="trust-icon">&#127968;</div><div className="trust-label">20,000+<br />Homes Served</div></div><div className="trust-card"><div className="trust-icon">&#128176;</div><div className="trust-label">Flexible<br />Financing</div></div><div className="trust-card"><div className="trust-icon">&#9989;</div><div className="trust-label">Price Match<br />Guarantee</div></div></div></div></section>
+      {trustPoints.length > 0 && (<section className="trust-section"><div className="section-inner"><span className="section-label" style={{ color: co.color_cta }}>Why Families Choose {co.name.split(" ")[0]}</span><h2 className="section-title">Built on trust for over {co.years_in_business} years</h2><div className="trust-grid">{trustPoints.map(function(tp, i) { return (<div key={i} className="trust-card"><div className="trust-icon">{tp.icon}</div><div className="trust-label" dangerouslySetInnerHTML={{ __html: tp.label.replace(/\n/g, "<br />") }} /></div>); })}</div></div></section>)}
 
-      <section className="cta-section"><div className="section-inner"><h2 className="section-title">Questions before your appointment?</h2><p className="section-subtitle">We&apos;re happy to help. Give us a call anytime.</p><a href="tel:8652256555" className="cta-btn">Call (865) 225-6555<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z" /></svg></a><div className="cta-trust">We look forward to meeting you!</div></div></section>
+      <section className="cta-section"><div className="section-inner"><h2 className="section-title">Questions before your appointment?</h2><p className="section-subtitle">We&apos;re happy to help. Give us a call anytime.</p>{co.phone && (<a href={"tel:" + phoneDigits} className="cta-btn">Call {co.phone}<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z" /></svg></a>)}<div className="cta-trust">We look forward to meeting you!</div></div></section>
 
-      <footer><p>&copy; 2026 Aqua Clear Water Systems &middot; Proudly serving East &amp; Middle Tennessee &middot; <a href="https://aquaclearws.com" style={{ color: "#41B6E6", textDecoration: "none" }}>aquaclearws.com</a></p></footer>
+      <footer><p>&copy; {new Date().getFullYear()} {co.name}{co.tagline ? " \u00b7 " + co.tagline : ""}{co.website ? " \u00b7 " : ""}{co.website && (<a href={co.website} style={{ color: co.color_accent, textDecoration: "none" }}>{co.website.replace(/^https?:\/\//, "")}</a>)}</p></footer>
     </>
   );
 }
+
+/* ─── SUB-COMPONENTS ─── */
 
 function ContaminantCard({ data }: { data: ContaminantData }) {
   var vc = data.status === "exceeds" ? "danger" : data.status === "warning" ? "warn" : "safe";
