@@ -109,7 +109,7 @@ async function getReport(id: string, company?: CompanyData | null): Promise<Repo
 }
 
 // ─── Get contaminants (shared water cache — not company-specific) ───
-async function getContaminants(city: string, state: string, zip: string): Promise<ContaminantData[]> {
+async function getContaminants(city: string, state: string, zip: string, lat: number, lng: number): Promise<ContaminantData[]> {
   var cached = await supabase.from("water_cache").select("data, fetched_at").eq("zip", zip).single();
   if (cached.data && cached.data.data) {
     var age = Date.now() - new Date(cached.data.fetched_at).getTime();
@@ -120,22 +120,17 @@ async function getContaminants(city: string, state: string, zip: string): Promis
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
   try {
+    // Try city + state lookup first
     var r1 = await fetch("https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
     var d1: any = null;
     if (r1.ok) { d1 = await r1.json(); }
+    // If city lookup failed, fall back to lat/lng
     if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
-      var zipParams = ["zip_code", "zipcode", "zip"];
-      var foundViaZip = false;
-      var debugInfo = "city=" + city + " status=" + (r1 ? r1.status : "null");
-      for (var zi = 0; zi < zipParams.length; zi++) {
-        var r1z = await fetch("https://api.gosimplelab.com/api/utilities/list?" + zipParams[zi] + "=" + encodeURIComponent(zip), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
-        if (r1z.ok) {
-          var d1z = await r1z.json();
-          if (d1z && d1z.result === "OK" && d1z.data && d1z.data.length > 0) { d1 = d1z; foundViaZip = true; break; }
-          debugInfo += " | " + zipParams[zi] + "=" + r1z.status + " result=" + (d1z ? d1z.result : "null") + " count=" + (d1z && d1z.data ? d1z.data.length : 0);
-        } else { debugInfo += " | " + zipParams[zi] + "=" + r1z.status; }
+      var r1ll = await fetch("https://api.gosimplelab.com/api/utilities/list?latitude=" + lat + "&longitude=" + lng, { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
+      if (r1ll.ok) { d1 = await r1ll.json(); }
+      if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
+        return [makeDebug("DEBUG: no utils for " + city + " or coords " + lat + "," + lng)];
       }
-      if (!foundViaZip) return [makeDebug("DEBUG: no utils. " + debugInfo)];
     }
 
     var utilities = d1.data;
@@ -227,7 +222,7 @@ export default async function ReportPage({ searchParams }: { searchParams: { id?
 
   // Fetch all data — customers and reviews scoped to company
   var [contaminants, nearbyCustomers, reviewData] = await Promise.all([
-    getContaminants(report.city, report.state, report.zip),
+    getContaminants(report.city, report.state, report.zip, lat, lng),
     fetchNearbyCustomers(lat, lng, co.id),
     getReviews(report.zip, co.id)
   ]);
