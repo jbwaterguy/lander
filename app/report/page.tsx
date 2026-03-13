@@ -119,18 +119,49 @@ async function getContaminants(city: string, state: string, zip: string, lat: nu
 
   var apiKey = process.env.WATER_API_KEY;
   if (!apiKey) return [makeDebug("DEBUG: No API key")];
+
+  // Helper to log each API call
+  async function logApiCall(endpoint: string, detail: string) {
+    await supabase.from("api_usage").insert({ service: "simplelab", endpoint: endpoint, zip: zip, city: city });
+  }
+
   try {
     // Try city + state lookup first
+    await logApiCall("utilities/list", "city=" + city);
     var r1 = await fetch("https://api.gosimplelab.com/api/utilities/list?city=" + encodeURIComponent(city) + "&state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
     var d1: any = null;
     if (r1.ok) { d1 = await r1.json(); }
     // If city lookup failed, fall back to lat/lng
     if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
+      await logApiCall("utilities/list", "lat/lng fallback");
       var r1ll = await fetch("https://api.gosimplelab.com/api/utilities/list?latitude=" + lat + "&longitude=" + lng, { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
       if (r1ll.ok) { d1 = await r1ll.json(); }
-      if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
-        return [makeDebug("DEBUG: no utils for " + city + " or coords " + lat + "," + lng)];
+    }
+    // If lat/lng also failed, try state-wide search (gets all utilities in state)
+    if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
+      await logApiCall("utilities/list", "state fallback");
+      var r1st = await fetch("https://api.gosimplelab.com/api/utilities/list?state_code=" + encodeURIComponent(state), { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
+      if (r1st.ok) {
+        var d1st = await r1st.json();
+        // Find the utility closest to our coordinates
+        if (d1st && d1st.result === "OK" && d1st.data && d1st.data.length > 0) {
+          var closest: any = null;
+          var closestDist = Infinity;
+          for (var s = 0; s < d1st.data.length; s++) {
+            var u = d1st.data[s];
+            if (u.latitude && u.longitude) {
+              var dlat = u.latitude - lat;
+              var dlng = u.longitude - lng;
+              var dist = dlat * dlat + dlng * dlng;
+              if (dist < closestDist) { closestDist = dist; closest = u; }
+            }
+          }
+          if (closest) { d1 = { result: "OK", data: [closest] }; }
+        }
       }
+    }
+    if (!d1 || d1.result !== "OK" || !d1.data || d1.data.length === 0) {
+      return [makeDebug("DEBUG: no utils for " + city + " " + state + " at " + lat + "," + lng)];
     }
 
     var utilities = d1.data;
@@ -140,6 +171,7 @@ async function getContaminants(city: string, state: string, zip: string, lat: nu
       var pwsid = utilities[u].pwsid;
       if (!pwsid) continue;
       allPwsids.push(pwsid);
+      await logApiCall("utilities/results", "pwsid=" + pwsid);
       var r2 = await fetch("https://api.gosimplelab.com/api/utilities/results?pws_id=" + pwsid + "&result_type=pws", { cache: "no-store", headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json", "Accept": "application/json" } });
       if (!r2.ok) continue;
       var txt = await r2.text();
