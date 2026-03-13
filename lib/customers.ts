@@ -8,25 +8,33 @@ export interface NearbyCustomer {
 
 /**
  * Fetches existing customers near a given lat/lng from Supabase.
- * Expands search radius until it finds at least 20 customers.
- * Starts at 3 miles, then 10, 25, 50.
+ * Scoped to a specific company. Expands search radius until it finds at least 20.
  */
 export async function fetchNearbyCustomers(
   lat: number,
-  lng: number
+  lng: number,
+  companyId?: string
 ): Promise<NearbyCustomer[]> {
-  const radiusSteps = [3, 10, 25, 50];
+  var radiusSteps = [3, 10, 25, 50];
 
-  for (const radiusMiles of radiusSteps) {
-    const radiusDeg = radiusMiles / 69;
+  for (var r = 0; r < radiusSteps.length; r++) {
+    var radiusMiles = radiusSteps[r];
+    var radiusDeg = radiusMiles / 69;
 
-    const { data, error } = await supabase
+    var query = supabase
       .from("customers")
       .select("lat, lng, install_date")
       .gte("lat", lat - radiusDeg)
       .lte("lat", lat + radiusDeg)
       .gte("lng", lng - radiusDeg)
       .lte("lng", lng + radiusDeg);
+
+    // Scope to company if provided
+    if (companyId) {
+      query = query.eq("company_id", companyId);
+    }
+
+    var { data, error } = await query;
 
     if (error) {
       console.error("Error fetching nearby customers:", error);
@@ -38,11 +46,10 @@ export async function fetchNearbyCustomers(
     }
 
     // If we're on the last radius step, return whatever we found
-    if (radiusMiles === radiusSteps[radiusSteps.length - 1] && data && data.length > 0) {
+    if (r === radiusSteps.length - 1 && data && data.length > 0) {
       return data;
     }
   }
 
-  // Final fallback — return empty array instead of fake data
   return [];
 }
