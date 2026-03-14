@@ -191,7 +191,7 @@ if (util.latitude && util.longitude) {
         if (ta < 2) continue;
         var st: "exceeds" | "warning" | "ok" = ta >= 10 ? "exceeds" : "warning";
         var desc = "";
-        if (c.health_effects) { var s = c.health_effects.split(". ")[0]; desc = s.length > 120 ? s.substring(0, 117) + "..." : s; } else if (c.sources) { var s2 = c.sources.split(". ")[0]; desc = s2.length > 120 ? s2.substring(0, 117) + "..." : s2; } else { desc = (c.type || "Contaminant") + " detected in your water"; }
+        if (c.health_effects) { var he = c.health_effects.split(". ")[0]; desc = he.length > 120 ? he.substring(0, 117) + "..." : he; }
         var bodyEffects: string[] = [];
         if (c.body_effects) {
           if (Array.isArray(c.body_effects)) { bodyEffects = c.body_effects; }
