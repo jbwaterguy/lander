@@ -153,7 +153,7 @@ if (util.latitude && util.longitude) {
   var dlat = util.latitude - lat;
   var dlng = util.longitude - lng;
               var dist = dlat * dlat + dlng * dlng;
-              if (dist < closestDist) { closestDist = dist; closest = u; }
+              if (dist < closestDist) { closestDist = dist; closest = util; }
             }
           }
           if (closest) { d1 = { result: "OK", data: [closest] }; }
