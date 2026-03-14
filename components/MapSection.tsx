@@ -1,8 +1,3 @@
-
-
-
-
-
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -33,13 +28,8 @@ export default function MapSection({
 
   useEffect(() => {
     const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    if (!token || token === "your-mapbox-token-here" || !mapContainer.current) return;
 
-    // If no Mapbox token, show the CSS fallback map
-    if (!token || token === "your-mapbox-token-here" || !mapContainer.current) {
-      return;
-    }
-
-    // Dynamically load Mapbox GL
     const link = document.createElement("link");
     link.href = "https://api.mapbox.com/mapbox-gl-js/v3.4.0/mapbox-gl.css";
     link.rel = "stylesheet";
@@ -53,7 +43,7 @@ export default function MapSection({
 
       const map = new mapboxgl.Map({
         container: mapContainer.current!,
-        style: "mapbox://styles/mapbox/light-v11",
+        style: "mapbox://styles/mapbox/satellite-streets-v12",
         center: [centerLng, centerLat],
         zoom: 13,
         interactive: true,
@@ -63,39 +53,90 @@ export default function MapSection({
       map.addControl(new mapboxgl.NavigationControl(), "top-right");
 
       map.on("load", () => {
-        // Add customer pins
-        customers.forEach((customer) => {
-          const el = document.createElement("div");
-          el.style.cssText = `
-            width: 14px; height: 14px;
-            background: #2e86de;
-            border: 3px solid white;
-            border-radius: 50%;
-            box-shadow: 0 2px 8px rgba(46,134,222,0.4);
-          `;
-          new mapboxgl.Marker({ element: el })
-            .setLngLat([customer.lng, customer.lat])
-            .addTo(map);
+        // Build GeoJSON for customer pins
+        const customerFeatures = customers.map((c) => ({
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [c.lng, c.lat] },
+          properties: {},
+        }));
+
+        // Add customer pins as a GeoJSON source + circle layer (stays fixed on zoom)
+        map.addSource("customers", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: customerFeatures },
         });
 
-        // Add client pin (red, larger, with popup)
-        const clientEl = document.createElement("div");
-        clientEl.style.cssText = `
-          width: 20px; height: 20px;
-          background: #ee5a24;
-          border: 3px solid white;
-          border-radius: 50%;
-          box-shadow: 0 2px 12px rgba(238,90,36,0.5);
-        `;
-        new mapboxgl.Marker({ element: clientEl })
+        // White border ring (larger circle behind)
+        map.addLayer({
+          id: "customers-border",
+          type: "circle",
+          source: "customers",
+          paint: {
+            "circle-radius": 7,
+            "circle-color": "#ffffff",
+            "circle-opacity": 1,
+          },
+        });
+
+        // Blue fill dot
+        map.addLayer({
+          id: "customers-fill",
+          type: "circle",
+          source: "customers",
+          paint: {
+            "circle-radius": 5,
+            "circle-color": "#2e86de",
+            "circle-opacity": 0.9,
+          },
+        });
+
+        // Client pin as GeoJSON too
+        map.addSource("client", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: [{
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [centerLng, centerLat] },
+              properties: {},
+            }],
+          },
+        });
+
+        // White border for client pin
+        map.addLayer({
+          id: "client-border",
+          type: "circle",
+          source: "client",
+          paint: {
+            "circle-radius": 10,
+            "circle-color": "#ffffff",
+            "circle-opacity": 1,
+          },
+        });
+
+        // Red fill for client pin
+        map.addLayer({
+          id: "client-fill",
+          type: "circle",
+          source: "client",
+          paint: {
+            "circle-radius": 8,
+            "circle-color": "#ee5a24",
+            "circle-opacity": 1,
+          },
+        });
+
+        // "Your Home" label popup on client pin
+        new mapboxgl.Popup({
+          offset: 25,
+          closeButton: false,
+          closeOnClick: false,
+          className: "home-popup",
+        })
           .setLngLat([centerLng, centerLat])
-          .setPopup(
-            new mapboxgl.Popup({ offset: 25 }).setHTML(
-              `<strong style="font-family: Outfit, sans-serif; font-size: 13px;">Your Home</strong>`
-            )
-          )
-          .addTo(map)
-          .togglePopup();
+          .setHTML(`<strong style="font-family: Outfit, sans-serif; font-size: 13px;">Your Home</strong>`)
+          .addTo(map);
       });
 
       mapRef.current = map;
@@ -110,11 +151,7 @@ export default function MapSection({
   return (
     <div className="map-container">
       <div className="map-frame" ref={mapContainer}>
-        {/* CSS fallback map — shown if Mapbox hasn't loaded yet */}
-        <FallbackMap
-          customerCount={customerCount}
-          clientName={clientName}
-        />
+        <FallbackMap customerCount={customerCount} clientName={clientName} />
       </div>
       <div className="map-legend">
         <div className="legend-item">
@@ -138,7 +175,6 @@ function FallbackMap({
   customerCount: number;
   clientName: string;
 }) {
-  // Generate scattered pin positions
   const pins = Array.from({ length: Math.min(customerCount, 35) }, (_, i) => ({
     left: 5 + Math.random() * 90,
     top: 5 + Math.random() * 90,
@@ -160,121 +196,21 @@ function FallbackMap({
         backgroundSize: "40px 40px, 40px 40px, 100% 100%",
       }}
     >
-      {/* Road lines */}
-      <div
-        style={{
-          position: "absolute",
-          top: "35%",
-          left: 0,
-          right: 0,
-          height: 3,
-          background: "rgba(255,255,255,0.8)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: "62%",
-          left: "10%",
-          right: "5%",
-          height: 2,
-          background: "rgba(255,255,255,0.8)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: "28%",
-          top: 0,
-          bottom: 0,
-          width: 3,
-          background: "rgba(255,255,255,0.8)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: "55%",
-          top: "10%",
-          bottom: "15%",
-          width: 2,
-          background: "rgba(255,255,255,0.8)",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          left: "78%",
-          top: "5%",
-          bottom: 0,
-          width: 2,
-          background: "rgba(255,255,255,0.8)",
-        }}
-      />
+      <div style={{ position: "absolute", top: "35%", left: 0, right: 0, height: 3, background: "rgba(255,255,255,0.8)" }} />
+      <div style={{ position: "absolute", top: "62%", left: "10%", right: "5%", height: 2, background: "rgba(255,255,255,0.8)" }} />
+      <div style={{ position: "absolute", left: "28%", top: 0, bottom: 0, width: 3, background: "rgba(255,255,255,0.8)" }} />
+      <div style={{ position: "absolute", left: "55%", top: "10%", bottom: "15%", width: 2, background: "rgba(255,255,255,0.8)" }} />
+      <div style={{ position: "absolute", left: "78%", top: "5%", bottom: 0, width: 2, background: "rgba(255,255,255,0.8)" }} />
 
-      {/* Customer pins */}
       {pins.map((pin, i) => (
-        <div
-          key={i}
-          style={{
-            position: "absolute",
-            left: `${pin.left}%`,
-            top: `${pin.top}%`,
-            zIndex: 2,
-            animation: `dropIn 0.5s ease-out ${pin.delay}s backwards`,
-          }}
-        >
-          <div
-            style={{
-              width: 14,
-              height: 14,
-              background: "#2e86de",
-              border: "3px solid white",
-              borderRadius: "50%",
-              boxShadow: "0 2px 8px rgba(46,134,222,0.4)",
-            }}
-          />
+        <div key={i} style={{ position: "absolute", left: `${pin.left}%`, top: `${pin.top}%`, zIndex: 2, animation: `dropIn 0.5s ease-out ${pin.delay}s backwards` }}>
+          <div style={{ width: 14, height: 14, background: "#2e86de", border: "3px solid white", borderRadius: "50%", boxShadow: "0 2px 8px rgba(46,134,222,0.4)" }} />
         </div>
       ))}
 
-      {/* Client pin */}
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "48%",
-          transform: "translate(-50%, -50%)",
-          zIndex: 10,
-          textAlign: "center",
-          animation: "dropIn 0.5s ease-out 1.2s backwards",
-        }}
-      >
-        <div
-          style={{
-            background: "#0a1628",
-            color: "white",
-            fontSize: 11,
-            fontWeight: 600,
-            padding: "4px 10px",
-            borderRadius: 6,
-            marginBottom: 6,
-            whiteSpace: "nowrap",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
-          }}
-        >
-          Your Home
-        </div>
-        <div
-          style={{
-            width: 18,
-            height: 18,
-            background: "#ee5a24",
-            border: "3px solid white",
-            borderRadius: "50%",
-            boxShadow: "0 2px 12px rgba(238,90,36,0.5)",
-            margin: "0 auto",
-          }}
-        />
+      <div style={{ position: "absolute", left: "50%", top: "48%", transform: "translate(-50%, -50%)", zIndex: 10, textAlign: "center", animation: "dropIn 0.5s ease-out 1.2s backwards" }}>
+        <div style={{ background: "#0a1628", color: "white", fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 6, marginBottom: 6, whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(0,0,0,0.2)" }}>Your Home</div>
+        <div style={{ width: 18, height: 18, background: "#ee5a24", border: "3px solid white", borderRadius: "50%", boxShadow: "0 2px 12px rgba(238,90,36,0.5)", margin: "0 auto" }} />
       </div>
 
       <style>{`
