@@ -17,6 +17,7 @@ function generateId(): string {
 
 async function geocodeAddress(address: string, city: string, state: string, zip: string): Promise<{ lat: number; lng: number } | null> {
   var fullAddress = address + ", " + city + ", " + state + " " + zip;
+  // Try 1: Full address via Census API
   try {
     var censusUrl = "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=" + encodeURIComponent(fullAddress) + "&benchmark=Public_AR_Current&format=json";
     var r1 = await fetch(censusUrl, { signal: AbortSignal.timeout(5000) });
@@ -28,12 +29,22 @@ async function geocodeAddress(address: string, city: string, state: string, zip:
       }
     }
   } catch (e) { /* fall through */ }
+  // Try 2: Full address via Nominatim
   try {
     var nomUrl = "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(fullAddress) + "&format=json&limit=1&countrycodes=us";
     var r2 = await fetch(nomUrl, { headers: { "User-Agent": "WaterReportApp/1.0" }, signal: AbortSignal.timeout(5000) });
     if (r2.ok) {
       var d2 = await r2.json();
       if (d2.length > 0) return { lat: parseFloat(d2[0].lat), lng: parseFloat(d2[0].lon) };
+    }
+  } catch (e) { /* fall through */ }
+  // Try 3: Just city + state + zip via Nominatim (safety net — always resolves)
+  try {
+    var cityQuery = city + ", " + state + " " + zip;
+    var r3 = await fetch("https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(cityQuery) + "&format=json&limit=1&countrycodes=us", { headers: { "User-Agent": "WaterReportApp/1.0" }, signal: AbortSignal.timeout(5000) });
+    if (r3.ok) {
+      var d3 = await r3.json();
+      if (d3.length > 0) return { lat: parseFloat(d3[0].lat), lng: parseFloat(d3[0].lon) };
     }
   } catch (e) { /* no geocode */ }
   return null;
