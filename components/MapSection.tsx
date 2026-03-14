@@ -41,14 +41,18 @@ export default function MapSection({
       const mapboxgl = (window as any).mapboxgl;
       mapboxgl.accessToken = token;
 
-      const map = new mapboxgl.Map({
+     const map = new mapboxgl.Map({
         container: mapContainer.current!,
         style: "mapbox://styles/mapbox/satellite-streets-v12",
         center: [centerLng, centerLat],
         zoom: 13,
         interactive: true,
         scrollZoom: false,
+        logoPosition: "top-left",
+        attributionControl: false,
       });
+
+      map.addControl(new mapboxgl.AttributionControl({ compact: true }), "top-left");
 
       map.addControl(new mapboxgl.NavigationControl(), "top-right");
 
