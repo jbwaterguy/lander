@@ -148,10 +148,10 @@ async function getContaminants(city: string, state: string, zip: string, lat: nu
           var closest: any = null;
           var closestDist = Infinity;
           for (var s = 0; s < d1st.data.length; s++) {
-            var u = d1st.data[s];
-            if (u.latitude && u.longitude) {
-              var dlat = u.latitude - lat;
-              var dlng = u.longitude - lng;
+           var util = d1st.data[s];
+if (util.latitude && util.longitude) {
+  var dlat = util.latitude - lat;
+  var dlng = util.longitude - lng;
               var dist = dlat * dlat + dlng * dlng;
               if (dist < closestDist) { closestDist = dist; closest = u; }
             }
