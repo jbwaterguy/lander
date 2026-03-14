@@ -127,15 +127,11 @@ export default function MapSection({
           },
         });
 
-        // "Your Home" label popup on client pin
-        new mapboxgl.Popup({
-          offset: 25,
-          closeButton: false,
-          closeOnClick: false,
-          className: "home-popup",
-        })
+      // "Your Home" label as a single clean marker
+        var labelEl = document.createElement("div");
+        labelEl.innerHTML = '<div style="background:#0a1628;color:white;font-family:Outfit,sans-serif;font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.3);text-align:center;">Your Home</div>';
+        new mapboxgl.Marker({ element: labelEl, anchor: "bottom", offset: [0, -12] })
           .setLngLat([centerLng, centerLat])
-          .setHTML(`<strong style="font-family: Outfit, sans-serif; font-size: 13px;">Your Home</strong>`)
           .addTo(map);
       });
 
